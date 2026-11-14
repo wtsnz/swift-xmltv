@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="ISO-8859-1"?>
+<!DOCTYPE tv SYSTEM "xmltv.dtd">
+<!-- comment before root -->
+<tv source-info-name="edge" date="20080715">
+  <channel id="i10436.labs.zap2it.com"><display-name>13 KOMO</display-name><icon src="http://x/y.png"/></channel>
+  <programme start="20080715003000 -0600" stop="200807150100" channel="i10436.labs.zap2it.com">
+    <title lang="fr">Café crème</title>
+    <desc><![CDATA[Raw <b>bold</b> & stuff]]></desc>
+    <episode-num system="dd_progid">EP00003026.0666</episode-num>
+    <episode-num system="xmltv_ns">  . 6/22 .  </episode-num>
+    <previously-shown start="20080711000000" />
+    <x-custom foo="bar"><nested>ignored</nested></x-custom>
+    <star-rating><value>3.5 / 5</value></star-rating>
+    <length units="hours">1</length>
+  </programme>
+  <programme start="20021004090000 BST" channel="i10436.labs.zap2it.com" clumpidx="1/2"><title>&#x263A; &#9731; &apos;q&apos; &quot;dq&quot;</title></programme>
+  <programme start="2008" channel="i10436.labs.zap2it.com"><title>Truncated start</title></programme>
+</tv>
