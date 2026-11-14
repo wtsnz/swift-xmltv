@@ -9,7 +9,7 @@ Each layer calls only the one below it. Only the API and model are public.
 
 ```
 API       XMLTVDocument  XMLTVReader  XMLTVItems  ParseOptions  XMLTVError  ParseReport
-Model     TVInfo  Channel  Programme (+ Details box)  Credit  EpisodeNumber  XMLTVTimestamp  ...
+Model     TVInfo  Channel  Programme (+ nested Credit, Rating, EpisodeNumber, ...)  XMLTVTimestamp
 Drivers   DocumentDriver  (split, decode in parallel, verify, stitch, merge)
           StreamDecoder   (UTF-8 window, retry of the incomplete record)
 Decoder   XMLTVDecoder    (one method per element, filters, Diagnostics)

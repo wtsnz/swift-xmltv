@@ -22,7 +22,7 @@ The DTD's ordering rules are not enforced:
 Some values come from an open set, such as image types, review types, audio modes and
 episode-numbering systems. These are stored as the text written in the source, so values the DTD
 doesn't list survive. Values with a fixed meaning are converted: `yes`/`no` to `Bool`, a
-`<length>` to `Duration`, `clumpidx` to ``Clump``.
+`<length>` to `Duration`, `clumpidx` to ``Programme/Clump``.
 
 Text is trimmed of leading and trailing whitespace after entities are decoded. Inner
 whitespace, including newlines, is kept. This matches the upstream `tv_cat` tool.

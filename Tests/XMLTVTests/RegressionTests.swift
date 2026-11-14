@@ -153,7 +153,7 @@ struct RegressionTests {
         #expect(length.programmes[0].length == nil && length.report.diagnosticCount == 1)
         let episode = try parse(document(programme(#"<title>t</title><episode-num system="xmltv_ns">9223372036854775807.0.</episode-num>"#)))
         #expect(episode.programmes[0].episodeNumbers[0].xmltvNS?.displaySeason == nil)
-        #expect(XMLTVNS("-1.0.0") == nil)
+        #expect(Programme.EpisodeNumber.XMLTVNS("-1.0.0") == nil)
     }
 
     @Test func attributesAreComparedAfterDecoding() throws {

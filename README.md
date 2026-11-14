@@ -1,4 +1,4 @@
-# XMLTV
+# swift-xmltv
 
 A Swift library for reading [XMLTV](https://github.com/XMLTV/xmltv/blob/master/xmltv.dtd) TV
 guides. It decodes every field of the format into plain `Sendable` structs, at several
@@ -15,6 +15,12 @@ for programme in guide.programmes where programme.channelID == "BBC.One.uk" {
 
 Swift 6.2 or later. macOS 15, iOS 18, tvOS 18, watchOS 11, visionOS 2. No dependencies beyond the
 system zlib.
+
+```swift
+.package(url: "https://github.com/wtsnz/swift-xmltv.git", from: "0.1.0")
+// then, in your target:
+.product(name: "XMLTV", package: "swift-xmltv")
+```
 
 ## Three ways to read
 

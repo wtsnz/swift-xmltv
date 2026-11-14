@@ -7,7 +7,9 @@ several gigabytes per second.
 
 XMLTV is the XML format that most TV listings sources publish. A document is a `<tv>` root
 holding `<channel>` records and `<programme>` records. This library reads it into plain,
-`Sendable` Swift structs: ``Channel``, ``Programme`` and the values inside them.
+`Sendable` Swift structs: ``Channel``, ``Programme`` and the values inside them. Types that only
+appear inside a programme are nested in it, such as ``Programme/Credit`` and
+``Programme/Rating``, so that names like `Image` don't clash with SwiftUI.
 
 ```swift
 import XMLTV
@@ -58,21 +60,13 @@ it costs.
 - ``TVInfo``
 - ``Channel``
 - ``Programme``
+- ``Programme/Credit``
+- ``Programme/EpisodeNumber``
+- ``Programme/Rating``
+- ``Programme/StarRating``
 - ``LocalizedText``
-- ``Credit``
-- ``EpisodeNumber``
-- ``XMLTVNS``
-- ``Rating``
-- ``StarRating``
-- ``Review``
 - ``Icon``
-- ``Image``
-- ``Link``
-- ``Video``
-- ``Audio``
-- ``Subtitles``
-- ``PreviouslyShown``
-- ``Clump``
+- ``URLReference``
 
 ### Time
 

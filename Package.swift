@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "XMLTV",
+    name: "swift-xmltv",
     platforms: [.macOS(.v15), .iOS(.v18), .tvOS(.v18), .watchOS(.v11), .visionOS(.v2)],
     products: [
         .library(name: "XMLTV", targets: ["XMLTV"]),

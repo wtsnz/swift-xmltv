@@ -15,7 +15,7 @@ final class FoundationBuilder: NSObject, XMLParserDelegate {
     private var ratingSystem: String?
     private var isStarRating = false
     private var episodeSystem = "onscreen"
-    private var creditRole: Credit.Role?
+    private var creditRole: Programme.Credit.Role?
 
     init(url: URL) { self.url = url }
 
@@ -61,11 +61,11 @@ final class FoundationBuilder: NSObject, XMLParserDelegate {
         case "desc": current?.descriptions.append(LocalizedText(value, language: language))
         case "category": current?.categories.append(LocalizedText(value, language: language))
         case "date": current?.date = value
-        case "episode-num": current?.episodeNumbers.append(EpisodeNumber(system: episodeSystem, value: value))
-        case "value" where isStarRating: current?.starRatings.append(StarRating(system: ratingSystem, value: value))
-        case "value": current?.ratings.append(Rating(system: ratingSystem, value: value))
+        case "episode-num": current?.episodeNumbers.append(Programme.EpisodeNumber(system: episodeSystem, value: value))
+        case "value" where isStarRating: current?.starRatings.append(Programme.StarRating(system: ratingSystem, value: value))
+        case "value": current?.ratings.append(Programme.Rating(system: ratingSystem, value: value))
         case "director", "actor", "writer", "producer", "presenter", "composer":
-            if let creditRole { current?.credits.append(Credit(role: creditRole, name: value)) }
+            if let creditRole { current?.credits.append(Programme.Credit(role: creditRole, name: value)) }
         default: break
         }
         text = ""

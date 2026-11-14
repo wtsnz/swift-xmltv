@@ -337,13 +337,13 @@ struct XMLTVDecoder {
         return icon
     }
 
-    mutating func link(_ name: ByteRange, isEmpty: Bool) throws(XMLTVError) -> Link {
+    mutating func link(_ name: ByteRange, isEmpty: Bool) throws(XMLTVError) -> URLReference {
         let system = try scanner.attribute("system").map { attribute throws(XMLTVError) in try string(attribute) }
-        return Link(try textContent(of: name, isEmpty: isEmpty), system: system)
+        return URLReference(try textContent(of: name, isEmpty: isEmpty), system: system)
     }
 
-    mutating func image(_ name: ByteRange, isEmpty: Bool) throws(XMLTVError) -> Image {
-        var image = Image(url: "")
+    mutating func image(_ name: ByteRange, isEmpty: Bool) throws(XMLTVError) -> Programme.Image {
+        var image = Programme.Image(url: "")
         for index in 0..<scanner.attributeCount {
             let attribute = scanner.attribute(at: index)
             if scanner.bytes(attribute.name, equal: "type") { image.type = try string(attribute) }

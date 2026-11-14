@@ -42,9 +42,9 @@ public struct Channel: Sendable, Hashable, Identifiable {
     /// Logos, most preferred first.
     public var icons: [Icon]
     /// Web pages about the channel.
-    public var urls: [Link]
+    public var urls: [URLReference]
 
-    public init(id: String, displayNames: [LocalizedText] = [], icons: [Icon] = [], urls: [Link] = []) {
+    public init(id: String, displayNames: [LocalizedText] = [], icons: [Icon] = [], urls: [URLReference] = []) {
         self.id = id
         self.displayNames = displayNames
         self.icons = icons
@@ -85,8 +85,9 @@ public struct Icon: Sendable, Hashable {
     }
 }
 
-/// A `<url>`: a web address, with the system it belongs to.
-public struct Link: Sendable, Hashable {
+/// A `<url>`: a web address, with the system it belongs to. Named `URLReference` rather than
+/// `Link` so it does not clash with SwiftUI's `Link`.
+public struct URLReference: Sendable, Hashable {
     /// The URL, as written. It is a `String` rather than a `URL`, because feeds contain values
     /// that `URL` would reject, and because creating millions of `URL`s is slow.
     public var value: String
@@ -95,31 +96,6 @@ public struct Link: Sendable, Hashable {
 
     public init(_ value: String, system: String? = nil) {
         self.value = value
-        self.system = system
-    }
-}
-
-/// An `<image>`: a poster, backdrop or photo.
-///
-/// The classification attributes keep the text written in the source, so values the DTD
-/// doesn't list survive.
-public struct Image: Sendable, Hashable {
-    /// The image URL, as written.
-    public var url: String
-    /// The `type` attribute: `poster`, `backdrop`, `still`, `person` or `character`.
-    public var type: String?
-    /// The `size` attribute: `1` (small), `2` (medium) or `3` (large).
-    public var size: String?
-    /// The `orient` attribute: `P` (portrait) or `L` (landscape).
-    public var orientation: String?
-    /// The `system` attribute, naming the source of the image.
-    public var system: String?
-
-    public init(url: String, type: String? = nil, size: String? = nil, orientation: String? = nil, system: String? = nil) {
-        self.url = url
-        self.type = type
-        self.size = size
-        self.orientation = orientation
         self.system = system
     }
 }

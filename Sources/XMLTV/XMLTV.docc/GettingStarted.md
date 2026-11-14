@@ -9,12 +9,16 @@ Add the package, parse a guide, and find the programmes you want.
 ```swift
 // Package.swift
 dependencies: [
-    .package(url: "https://github.com/wtsnz/XMLTV.git", from: "0.1.0"),
+    .package(url: "https://github.com/wtsnz/swift-xmltv.git", from: "0.1.0"),
 ],
 targets: [
-    .target(name: "MyApp", dependencies: ["XMLTV"]),
+    .target(name: "MyApp", dependencies: [
+        .product(name: "XMLTV", package: "swift-xmltv"),
+    ]),
 ]
 ```
+
+The package is `swift-xmltv`, and the module you import is `XMLTV`.
 
 The library needs Swift 6.2 or later and runs on macOS 15, iOS 18, tvOS 18, watchOS 11 and
 visionOS 2 or later. Its only dependency is the system zlib.

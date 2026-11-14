@@ -102,7 +102,7 @@ extension XMLTVDecoder {
                     if let rating = try rating(child, isEmpty: isEmpty) { append(rating, to: &programme.ratings, expecting: expectedCounts.ratings) }
                 case .starRating:
                     if let rating = try rating(child, isEmpty: isEmpty) {
-                        programme.starRatings.append(StarRating(system: rating.system, value: rating.value, icons: rating.icons))
+                        programme.starRatings.append(Programme.StarRating(system: rating.system, value: rating.value, icons: rating.icons))
                     }
                 case .previouslyShown:
                     programme.previouslyShown = try previouslyShown(child, isEmpty: isEmpty)
@@ -154,12 +154,12 @@ extension XMLTVDecoder {
 
     // MARK: Credits
 
-    private mutating func decodeCredits(_ name: ByteRange, isEmpty: Bool, into credits: inout [Credit]) throws(XMLTVError) {
+    private mutating func decodeCredits(_ name: ByteRange, isEmpty: Bool, into credits: inout [Programme.Credit]) throws(XMLTVError) {
         guard !isEmpty else { return }
         while true {
             switch try scanner.next() {
             case .startTag(let child, let childIsEmpty):
-                if let role = Credit.Role(XMLTVElement(scanner.pointer(to: child))) {
+                if let role = Programme.Credit.Role(XMLTVElement(scanner.pointer(to: child))) {
                     append(try credit(role, child, isEmpty: childIsEmpty), to: &credits, expecting: expectedCounts.credits)
                 } else {
                     try skipContent(of: child, isEmpty: childIsEmpty)
@@ -177,8 +177,8 @@ extension XMLTVDecoder {
 
     /// One person. The DTD makes these mixed content: the name is the element's own text, and it
     /// may be interleaved with `<image>` and `<url>` children.
-    private mutating func credit(_ role: Credit.Role, _ name: ByteRange, isEmpty: Bool) throws(XMLTVError) -> Credit {
-        var credit = Credit(role: role, name: "")
+    private mutating func credit(_ role: Programme.Credit.Role, _ name: ByteRange, isEmpty: Bool) throws(XMLTVError) -> Programme.Credit {
+        var credit = Programme.Credit(role: role, name: "")
         if role == .actor {
             if let character = scanner.attribute("role") { credit.character = try string(character) }
             if let guest = scanner.attribute("guest") {
@@ -204,8 +204,8 @@ extension XMLTVDecoder {
     }
 
     private mutating func mixedCredit(
-        _ credit: Credit, _ name: ByteRange, pieces: [TextPiece], next first: XMLToken
-    ) throws(XMLTVError) -> Credit {
+        _ credit: Programme.Credit, _ name: ByteRange, pieces: [TextPiece], next first: XMLToken
+    ) throws(XMLTVError) -> Programme.Credit {
         var credit = credit
         // Text ranges stay valid until the parse ends, so pieces are kept as ranges and decoded
         // together at the end tag. That keeps the shared text buffer free for the children.
@@ -240,14 +240,14 @@ extension XMLTVDecoder {
 
     // MARK: Small elements
 
-    private mutating func episodeNumber(_ name: ByteRange, isEmpty: Bool) throws(XMLTVError) -> EpisodeNumber {
+    private mutating func episodeNumber(_ name: ByteRange, isEmpty: Bool) throws(XMLTVError) -> Programme.EpisodeNumber {
         let system = try scanner.attribute("system").map { attribute throws(XMLTVError) in try string(attribute) } ?? "onscreen"
-        return EpisodeNumber(system: system, value: try textContent(of: name, isEmpty: isEmpty))
+        return Programme.EpisodeNumber(system: system, value: try textContent(of: name, isEmpty: isEmpty))
     }
 
     /// `<rating>` and `<star-rating>` share a shape: a `system` attribute, a required `<value>`
     /// and optional icons.
-    private mutating func rating(_ name: ByteRange, isEmpty: Bool) throws(XMLTVError) -> Rating? {
+    private mutating func rating(_ name: ByteRange, isEmpty: Bool) throws(XMLTVError) -> Programme.Rating? {
         let start = scanner.tokenStart
         let system = try scanner.attribute("system").map { attribute throws(XMLTVError) in try string(attribute) }
         var value: String?
@@ -280,11 +280,11 @@ extension XMLTVDecoder {
             guard let directText else { return nil }
             value = try text.text(directText.range, needsDecoding: directText.needsDecoding, in: scanner, diagnostics: &diagnostics)
         }
-        return Rating(system: system, value: value!, icons: icons)
+        return Programme.Rating(system: system, value: value!, icons: icons)
     }
 
-    private mutating func previouslyShown(_ name: ByteRange, isEmpty: Bool) throws(XMLTVError) -> PreviouslyShown {
-        var shown = PreviouslyShown()
+    private mutating func previouslyShown(_ name: ByteRange, isEmpty: Bool) throws(XMLTVError) -> Programme.PreviouslyShown {
+        var shown = Programme.PreviouslyShown()
         if let start = scanner.attribute("start") { shown.start = try timestamp(start) }
         if let channel = scanner.attribute("channel") { shown.channelID = try string(channel) }
         try skipContent(of: name, isEmpty: isEmpty)
@@ -311,8 +311,8 @@ extension XMLTVDecoder {
         return .seconds(amount * unitSeconds)
     }
 
-    private mutating func video(_ name: ByteRange, isEmpty: Bool) throws(XMLTVError) -> Video {
-        var video = Video()
+    private mutating func video(_ name: ByteRange, isEmpty: Bool) throws(XMLTVError) -> Programme.Video {
+        var video = Programme.Video()
         try forEachChild(of: name, isEmpty: isEmpty) { decoder, tag, child, childIsEmpty throws(XMLTVError) in
             switch tag {
             case .present: video.isPresent = Self.yesNo(try decoder.textContent(of: child, isEmpty: childIsEmpty))
@@ -325,8 +325,8 @@ extension XMLTVDecoder {
         return video
     }
 
-    private mutating func audio(_ name: ByteRange, isEmpty: Bool) throws(XMLTVError) -> Audio {
-        var audio = Audio()
+    private mutating func audio(_ name: ByteRange, isEmpty: Bool) throws(XMLTVError) -> Programme.Audio {
+        var audio = Programme.Audio()
         try forEachChild(of: name, isEmpty: isEmpty) { decoder, tag, child, childIsEmpty throws(XMLTVError) in
             switch tag {
             case .present: audio.isPresent = Self.yesNo(try decoder.textContent(of: child, isEmpty: childIsEmpty))
@@ -337,8 +337,8 @@ extension XMLTVDecoder {
         return audio
     }
 
-    private mutating func subtitles(_ name: ByteRange, isEmpty: Bool) throws(XMLTVError) -> Subtitles {
-        var subtitles = Subtitles(type: try scanner.attribute("type").map { attribute throws(XMLTVError) in try string(attribute) })
+    private mutating func subtitles(_ name: ByteRange, isEmpty: Bool) throws(XMLTVError) -> Programme.Subtitles {
+        var subtitles = Programme.Subtitles(type: try scanner.attribute("type").map { attribute throws(XMLTVError) in try string(attribute) })
         try forEachChild(of: name, isEmpty: isEmpty) { decoder, tag, child, childIsEmpty throws(XMLTVError) in
             if tag == .language {
                 subtitles.language = try decoder.localizedText(child, isEmpty: childIsEmpty)
@@ -349,9 +349,9 @@ extension XMLTVDecoder {
         return subtitles
     }
 
-    private mutating func review(_ name: ByteRange, isEmpty: Bool) throws(XMLTVError) -> Review? {
+    private mutating func review(_ name: ByteRange, isEmpty: Bool) throws(XMLTVError) -> Programme.Review? {
         let start = scanner.tokenStart
-        var review = Review(type: "", value: "")
+        var review = Programme.Review(type: "", value: "")
         for index in 0..<scanner.attributeCount {
             let attribute = scanner.attribute(at: index)
             if scanner.bytes(attribute.name, equal: "type") { review.type = try string(attribute) }
@@ -367,11 +367,11 @@ extension XMLTVDecoder {
         return review
     }
 
-    private mutating func clump(_ attribute: RawAttribute) throws(XMLTVError) -> Clump? {
+    private mutating func clump(_ attribute: RawAttribute) throws(XMLTVError) -> Programme.Clump? {
         let value = try string(attribute)
         let parts = value.split(separator: "/", omittingEmptySubsequences: false)
         if parts.count == 2, let index = Int(parts[0]), let count = Int(parts[1]), index >= 0, count > index {
-            return Clump(index: index, count: count)
+            return Programme.Clump(index: index, count: count)
         }
         try diagnostics.report(.invalidValue(element: "clumpidx", value: value), at: attribute.value.start)
         return nil
@@ -428,7 +428,7 @@ struct TextPiece {
     var needsDecoding: Bool
 }
 
-extension Credit.Role {
+extension Programme.Credit.Role {
     init?(_ tag: XMLTVElement) {
         switch tag {
         case .director: self = .director

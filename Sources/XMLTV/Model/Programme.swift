@@ -88,7 +88,7 @@ public struct Programme: Sendable, Hashable {
         get { details.fields.length } set { details.update { $0.length = newValue } }
     }
     /// Web pages about the programme.
-    public var urls: [Link] {
+    public var urls: [URLReference] {
         get { details.fields.urls } set { details.update { $0.urls = newValue } }
     }
     /// Countries where the programme was made.
@@ -143,7 +143,7 @@ public struct Programme: Sendable, Hashable {
     public var videoPlus: String? {
         get { details.fields.videoPlus } set { details.update { $0.videoPlus = newValue } }
     }
-    /// The `clumpidx` attribute. `0/1` (``Clump/single``) when absent.
+    /// The `clumpidx` attribute. `0/1` (``Programme/Clump/single``) when absent.
     public var clump: Clump {
         get { details.fields.clump } set { details.update { $0.clump = newValue } }
     }
@@ -157,7 +157,7 @@ extension Programme {
             var language: LocalizedText?
             var originalLanguage: LocalizedText?
             var length: Duration?
-            var urls: [Link] = []
+            var urls: [URLReference] = []
             var countries: [LocalizedText] = []
             var video: Video?
             var audio: Audio?
