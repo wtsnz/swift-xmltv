@@ -60,7 +60,7 @@ struct TimestampTests {
     @Test func namedZones() {
         #expect(valid("20020517020200 BST")?.secondsSince1970 == reference(2002, 5, 17, 2, 2, 0, offset: 3600))
         #expect(valid("20020517020200 UTC")?.utcOffsetSeconds == 0)
-        guard case .unresolvedZone(let timestamp, let name) = parse("20020517020200 IST") else {
+        guard case .unresolvedZone(let timestamp, let name, false) = parse("20020517020200 IST") else {
             Issue.record("IST must not be guessed"); return
         }
         #expect(name == "IST" && !timestamp.isTimeZoneKnown)

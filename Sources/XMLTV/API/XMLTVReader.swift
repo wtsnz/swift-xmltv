@@ -1,19 +1,17 @@
 import Foundation
 
-#if canImport(Darwin)
-import Darwin
-#elseif canImport(Glibc)
-import Glibc
-#endif
-
 /// A record from the top level of an XMLTV document.
+///
+/// These two cases are the whole of it, and that will not change, so a `switch` over an item
+/// needs no `default`. Other top-level elements are skipped. If the library ever offers them,
+/// it will be through a separate API, not a third case here.
 public enum XMLTVItem: Sendable, Hashable {
     case channel(Channel)
     case programme(Programme)
 }
 
-/// Reads an XMLTV document one record at a time, in document order, using memory proportional
-/// to the largest record rather than to the file.
+/// Reads an XMLTV document one record at a time, in document order, in bounded memory: a 1 MiB
+/// read buffer, a cache of recent strings capped at 4 MiB of text, and the record being read.
 ///
 /// ```swift
 /// var reader = try XMLTVReader(contentsOf: url)
@@ -122,45 +120,4 @@ public struct XMLTVReader: ~Copyable, @unchecked Sendable {
             }
         }
     }
-}
-
-/// An open file read in fixed-size pieces through one reusable buffer.
-final class FileInput {
-    private let descriptor: Int32
-    private let path: String
-    private var buffer: [UInt8] = []
-
-    init(_ url: URL) throws(XMLTVError) {
-        guard url.isFileURL else { throw XMLTVError(.notAFileURL(url.absoluteString)) }
-        path = url.path
-        descriptor = open(path, O_RDONLY | O_CLOEXEC)
-        guard descriptor >= 0 else { throw XMLTVError(.io(operation: "open", path: path, errno: errno)) }
-    }
-
-    deinit { close(descriptor) }
-
-    /// Reads up to `count` bytes and passes them to `body`. Returns false at the end of the file.
-    func read(_ count: Int, _ body: (UnsafeBufferPointer<UInt8>) throws(XMLTVError) -> Void) throws(XMLTVError) -> Bool {
-        if buffer.count < count { buffer = [UInt8](repeating: 0, count: count) }
-        let descriptor = self.descriptor
-        let n: Int = buffer.withUnsafeMutableBytes { raw in
-            while true {
-                let n = systemRead(descriptor, raw.baseAddress, count)
-                if n < 0 && errno == EINTR { continue }
-                return n
-            }
-        }
-        if n < 0 { throw XMLTVError(.io(operation: "read", path: path, errno: errno)) }
-        if n == 0 { return false }
-        try buffer.withUnsafeBufferPointer { buffer throws(XMLTVError) in
-            try body(UnsafeBufferPointer(rebasing: buffer[..<n]))
-        }
-        return true
-    }
-}
-
-/// `read(2)`, named so it is not confused with ``FileInput/read(_:_:)``.
-@inline(__always)
-private func systemRead(_ descriptor: Int32, _ buffer: UnsafeMutableRawPointer?, _ count: Int) -> Int {
-    read(descriptor, buffer, count)
 }

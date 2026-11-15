@@ -30,12 +30,14 @@ The rule for each kind of problem is fixed:
 | Unparseable `start` | The programme is dropped. | `programmeDropped` |
 | Unparseable `stop` or other time | The value becomes nil. | `valueDropped` |
 | Zone name missing from ``XMLTVOptions/namedTimeZones`` | Read as UTC, and ``XMLTVTimestamp/isTimeZoneKnown`` is false. | `assumedDefault` |
-| Programme without `start` or `channel` | The programme is dropped. | `programmeDropped` |
+| Programme without `start`, or with no or an empty `channel` | The programme is dropped. | `programmeDropped` |
 | Channel without `id` | The channel is dropped. | `channelDropped` |
 | Programme without a title, channel without a display name | Kept, with an empty array. | `keptAsWritten` |
 | `<rating>12</rating>` with no `<value>` | The direct text becomes the value. | `repaired` |
 | `<rating>` with neither | The rating is dropped. | `valueDropped` |
 | Icon without `src`, review without `type` | The element is dropped. | `valueDropped` |
+| `<present>`, `<colour>` other than `yes` or `no` | The value becomes nil. | `valueDropped` |
+| `guest` other than `yes` or `no` | Read as `no`. | `assumedDefault` |
 | Unknown entity such as `&nbsp;`, or a reference to a forbidden character | Kept literally. | `keptAsWritten` |
 | Invalid UTF-8 | Replaced with U+FFFD. | `repaired` |
 | A character XML forbids, such as NUL or U+FFFF | Kept. | `keptAsWritten` |
@@ -127,12 +129,26 @@ decode some of the garbage that inflates before the damage is detected, and thro
 where a whole-document parse throws ``XMLTVError/Kind/invalidCompressedData(_:)``. Either way
 the parse fails.
 
-### What is not checked
+### What is checked, and what is not
 
-The parser checks well-formedness, but it is not a validating XML processor:
+The parser checks the structure of the XML in every element, including skipped ones: tags,
+quoting, matching end tags, names that start with a letter, `_` or `:`, comments without `--`
+inside them, and a DOCTYPE only before the root. Broken structure before the root means the
+input is not a guide, ``XMLTVError/Kind/notXMLTV``; after the root it is
+``XMLTVError/Kind/contentAfterRoot``. It is not a validating XML processor:
 
 - It does not validate against the DTD. Children may come in any order, and unknown elements
   and attributes are skipped. Both are common in real feeds.
 - Text inside skipped elements is not checked for valid UTF-8 or allowed characters, because it
-  never becomes a string. Its markup is checked: start tags, quotes and matching end tags.
-- Attribute names are not checked for duplicates. Lookups use the first occurrence.
+  never becomes a string.
+- Name characters after the first, and `]]>` in text, which XML forbids, are not checked:
+  checking them would slow every element for errors no feed makes.
+- Attribute names are not checked for duplicates, and repeated elements that hold one value,
+  such as `<length>`, are not reported. The first occurrence is used.
+
+### Filtered records
+
+Records left out by ``XMLTVOptions/channelIDs`` or ``XMLTVOptions/timeWindow`` report nothing,
+whatever their problems: they are skipped before their content is decoded. The values needed
+to make the choice are still read, so in strict mode a broken `channel` attribute still
+throws, and with a time window, so does a start time that cannot be parsed.

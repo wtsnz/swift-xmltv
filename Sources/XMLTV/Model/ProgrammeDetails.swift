@@ -92,7 +92,7 @@ extension Programme {
             guard parts.count == 2,
                   let stars = Double(parts[0].trimmingCharacters(in: .whitespaces)),
                   let maximum = Double(parts[1].trimmingCharacters(in: .whitespaces)),
-                  maximum > 0, stars >= 0, stars <= maximum
+                  stars.isFinite, maximum.isFinite, maximum > 0, stars >= 0, stars <= maximum
             else { return nil }
             return Score(stars: stars, maximum: maximum)
         }

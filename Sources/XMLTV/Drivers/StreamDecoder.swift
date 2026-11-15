@@ -30,6 +30,7 @@ struct StreamDecoder: ~Copyable {
     private var retryAt = 0                      // decode again only once `window.count` reaches this
     private var discardedBytes = 0               // UTF-8 bytes dropped from the front of `window`
     private var discardedNewlines = 0
+    private var discardedColumn = 0              // bytes of the current line already discarded
     private var isFinal = false
     private var isEnded = false                  // the report is complete; `next()` returns `.end`
     private var inputProblems: [XMLTVError.Kind] = []
@@ -42,7 +43,7 @@ struct StreamDecoder: ~Copyable {
         self.options = options
         self.decoder = XMLTVDecoder(
             scanner: XMLScanner(UnsafeBufferPointer(start: nil, count: 0)), phase: .prolog, options: options,
-            recordsDiagnosticOffsets: false)
+            recordsDiagnosticOffsets: false, internerBudget: Interner.streamArenaBudget)
     }
 
     var info: TVInfo? { decoder.info }
@@ -144,6 +145,9 @@ struct StreamDecoder: ~Copyable {
         guard consumed > 0, consumed >= window.count / 2 else { return }
         if let base = window.bytes.baseAddress {
             discardedNewlines += ByteSearch.countNewlines(in: base, from: 0, end: consumed)
+            // Keep the column of the discard point, for errors on a line that began before it.
+            let lineStart = ByteSearch.lineStart(of: consumed, in: base)
+            discardedColumn = lineStart == 0 ? discardedColumn + consumed : consumed - lineStart
         }
         window.removeFirst(consumed)
         discardedBytes += consumed
@@ -161,7 +165,7 @@ struct StreamDecoder: ~Copyable {
             let sampleCount = decoder.diagnostics.samples.count
             let item: TopLevelItem
             do {
-                decoder.scanner.rebind(to: window.bytes, position: consumed)
+                decoder.scanner.rebind(to: window.bytes, position: consumed, isComplete: isFinal)
                 item = try decoder.next()
             } catch where error.kind == .unexpectedEndOfInput && !isFinal {
                 decoder.diagnostics.discardPending()
@@ -236,9 +240,9 @@ struct StreamDecoder: ~Copyable {
         let offset = min(error.byteOffset, bytes.count)
         if let base = bytes.baseAddress {
             error.line = discardedNewlines + ByteSearch.countNewlines(in: base, from: 0, end: offset) + 1
-            var lineStart = offset
-            while lineStart > 0 && base[lineStart - 1] != 0x0A { lineStart -= 1 }
-            error.column = offset - lineStart + 1
+            // With no line end before the offset in the window, the line began in discarded input.
+            let lineStart = ByteSearch.lineStart(of: offset, in: base)
+            error.column = offset - lineStart + (lineStart == 0 ? discardedColumn : 0) + 1
         }
         error.byteOffset = discardedBytes + offset
         return error

@@ -14,7 +14,8 @@ enum TimestampParser {
         /// in real feeds. The instant is computed linearly, so `20261113006000` means 01:00:00.
         case normalized(XMLTVTimestamp)
         /// A value with a zone name missing from the caller's table. The instant is as if UTC.
-        case unresolvedZone(XMLTVTimestamp, name: String)
+        /// `isNormalized` says whether a time field was also out of range.
+        case unresolvedZone(XMLTVTimestamp, name: String, isNormalized: Bool)
         case invalid
     }
 
@@ -126,6 +127,10 @@ enum TimestampParser {
                 else { return .invalid }
                 offset = (hours * 3600 + minutes * 60) * (sign == UInt8(ascii: "-") ? -1 : 1)
             } else {
+                // A zone name starts with a letter and has no digit before any `+` or `-`, as in
+                // `BST` or `GMT+1`. That rejects near misses such as the ISO form
+                // `20240101T120000Z`, whose `T120000Z` would otherwise be read as a name.
+                guard Self.isZoneName(UnsafeBufferPointer(rebasing: text[i..<end])) else { return .invalid }
                 let name = String(decoding: UnsafeBufferPointer(rebasing: text[i..<end]), as: UTF8.self)
                 if let known = namedZones[name] ?? namedZones[name.uppercased()] {
                     offset = Int(known)
@@ -139,8 +144,20 @@ enum TimestampParser {
         let timestamp = XMLTVTimestamp(
             secondsSince1970: local - Int64(offset), utcOffsetSeconds: Int32(offset),
             precision: precision, isTimeZoneKnown: unresolvedName == nil)
-        if let unresolvedName { return .unresolvedZone(timestamp, name: unresolvedName) }
+        if let unresolvedName { return .unresolvedZone(timestamp, name: unresolvedName, isNormalized: isNormalized) }
         return isNormalized ? .normalized(timestamp) : .valid(timestamp)
+    }
+
+    static func isZoneName(_ bytes: UnsafeBufferPointer<UInt8>) -> Bool {
+        guard let first = bytes.first, (first | 0x20) >= UInt8(ascii: "a"), (first | 0x20) <= UInt8(ascii: "z") else {
+            return false
+        }
+        for byte in bytes {
+            if byte == UInt8(ascii: "+") || byte == UInt8(ascii: "-") { return true }
+            if byte >= UInt8(ascii: "0") && byte <= UInt8(ascii: "9") { return false }
+            if byte.isXMLWhitespace { return false }
+        }
+        return true
     }
 
     // MARK: Civil calendar

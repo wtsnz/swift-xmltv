@@ -77,7 +77,9 @@ enum DocumentDriver {
     private static func threadCount(_ parallelism: XMLTVOptions.Parallelism) -> Int {
         switch parallelism {
         case .serial: 1
-        case .threads(let n): max(1, n)
+        // More threads than cores would only add contention; this also keeps `.threads(.max)`,
+        // a natural way to write "no limit", from overflowing the chunk arithmetic.
+        case .threads(let n): max(1, min(n, ProcessInfo.processInfo.activeProcessorCount))
         case .automatic: ProcessInfo.processInfo.activeProcessorCount
         }
     }
@@ -235,8 +237,17 @@ enum DocumentDriver {
                 phase: .body, options: options, syncMarks: candidate.marks)
             segments.append(Segment(result: repair, from: truePosition))
             if case .synced(let position) = repair.termination {
-                segments.append(Segment(result: candidate, from: position))
-                current = candidate
+                if lostSamples(candidate, keepingFrom: position) {
+                    // As above: the chunk lines up from `position`, but its samples were used up
+                    // before it. Decode its range again from there.
+                    let redo = decodeChunk(
+                        bytes, from: position, boundary: splits[index + 1], phase: .body, options: options, syncMarks: nil)
+                    segments.append(Segment(result: redo, from: position))
+                    current = redo
+                } else {
+                    segments.append(Segment(result: candidate, from: position))
+                    current = candidate
+                }
             } else {
                 current = repair
             }
@@ -349,9 +360,7 @@ enum DocumentDriver {
         var error = error
         let offset = min(error.byteOffset, bytes.count)
         error.line = ByteSearch.countNewlines(in: base, from: 0, end: offset) + 1
-        var lineStart = offset
-        while lineStart > 0 && base[lineStart - 1] != 0x0A { lineStart -= 1 }
-        error.column = offset - lineStart + 1
+        error.column = offset - ByteSearch.lineStart(of: offset, in: base) + 1
         return error
     }
 
@@ -370,10 +379,4 @@ enum DocumentDriver {
             return diagnostic
         }
     }
-}
-
-/// Lets the parallel loop share buffers that each iteration only touches at its own index.
-struct UncheckedSendable<Value>: @unchecked Sendable {
-    let value: Value
-    init(_ value: Value) { self.value = value }
 }

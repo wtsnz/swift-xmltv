@@ -53,11 +53,39 @@ public struct XMLTVTimestamp: Sendable, Hashable, Comparable, Codable {
     }
 
     /// The timestamp for a date, to the second, as written with the given offset. Fractions of
-    /// a second are dropped, rounding towards the past, as XMLTV cannot express them.
+    /// a second are dropped, rounding towards the past, as XMLTV cannot express them. Dates
+    /// beyond the range of `Int64` seconds, such as `distantFuture` scaled up, are clamped.
     public init(_ date: Date, utcOffsetSeconds: Int32 = 0) {
-        self.init(
-            secondsSince1970: Int64(date.timeIntervalSince1970.rounded(.down)),
-            utcOffsetSeconds: utcOffsetSeconds)
+        self.init(secondsSince1970: Self.seconds(date, rounding: .down), utcOffsetSeconds: utcOffsetSeconds)
+    }
+
+    /// A date as whole seconds since 1970, rounded as given and clamped to `Int64`. Infinite
+    /// dates clamp to the ends of the range, and NaN to zero, rather than trapping.
+    static func seconds(_ date: Date, rounding rule: FloatingPointRoundingRule) -> Int64 {
+        let seconds = date.timeIntervalSince1970.rounded(rule)
+        if seconds.isNaN { return 0 }
+        if seconds >= 0x1p63 { return .max }
+        if seconds < -0x1p63 { return .min }
+        return Int64(seconds)
+    }
+
+    /// The first second after the period this timestamp names: the next year for `2024`, the
+    /// next day for `20240101`. For a timestamp of second precision, the next second.
+    var periodEndSecondsSince1970: Int64 {
+        switch precision {
+        case .second: return secondsSince1970 &+ 1
+        case .minute: return secondsSince1970 &+ 60
+        case .hour: return secondsSince1970 &+ 3600
+        case .day: return secondsSince1970 &+ 86_400
+        case .month, .year:
+            // Calendar arithmetic, in the written offset.
+            let offset = Int64(utcOffsetSeconds)
+            let local = secondsSince1970 &+ offset
+            let days = local >= 0 ? local / 86_400 : (local &- 86_399) / 86_400
+            let (year, month, _) = TimestampParser.civilFromDays(Int(days))
+            let next = precision == .year ? (year + 1, 1) : (month == 12 ? (year + 1, 1) : (year, month + 1))
+            return Int64(TimestampParser.daysFromCivil(next.0, next.1, 1)) &* 86_400 &- offset
+        }
     }
 
     /// Parses XMLTV timestamp text, such as `20240101120000 +0100`, `2024` or
@@ -83,9 +111,11 @@ public struct XMLTVTimestamp: Sendable, Hashable, Comparable, Codable {
         case .valid(let timestamp):
             self = timestamp
         case .normalized(let timestamp) where policy == .lenient,
-             .unresolvedZone(let timestamp, _) where policy == .lenient:
+             .unresolvedZone(let timestamp, _, _) where policy == .lenient:
             self = timestamp
-        case .unresolvedZone(_, let name):
+        case .unresolvedZone(_, _, true):
+            throw XMLTVError(.invalidTimestamp(String(text)))
+        case .unresolvedZone(_, let name, false):
             throw XMLTVError(.unresolvedTimeZone(name))
         case .normalized, .invalid:
             throw XMLTVError(.invalidTimestamp(String(text)))

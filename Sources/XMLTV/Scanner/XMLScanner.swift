@@ -76,6 +76,12 @@ struct XMLScanner {
 
     private var storage: ScannerStorage
     private(set) var attributeCount = 0
+    /// Whether the buffer holds the rest of the input. When it does not, as in a streaming
+    /// window, text that runs to the end of the buffer may continue, so it is reported as
+    /// truncated rather than returned. A token is therefore never cut by a window boundary.
+    var isComplete = true
+    /// Whether a DOCTYPE is allowed here: only before the root element.
+    var isInProlog = true
 
     init(_ buffer: UnsafeBufferPointer<UInt8>, position: Int = 0, storage: ScannerStorage = ScannerStorage()) {
         // An empty buffer has no base address. Any non-null pointer will do: with `end == 0`
@@ -89,8 +95,11 @@ struct XMLScanner {
 
     /// Points the scanner at a new buffer, keeping its storage. Used by the streaming driver,
     /// whose buffer moves when it grows.
-    mutating func rebind(to buffer: UnsafeBufferPointer<UInt8>, position: Int) {
+    mutating func rebind(to buffer: UnsafeBufferPointer<UInt8>, position: Int, isComplete: Bool) {
+        let isInProlog = self.isInProlog
         self = XMLScanner(buffer, position: position, storage: storage)
+        self.isComplete = isComplete
+        self.isInProlog = isInProlog
     }
 
     // MARK: Byte access
@@ -141,6 +150,7 @@ struct XMLScanner {
             if base[position] != UInt8(ascii: "<") {
                 let (stop, needsDecoding) = ByteSearch.stop(
                     at: UInt8(ascii: "<"), in: base, from: position, end: end, flagControls: false)
+                if stop == end && !isComplete { throw truncated() }
                 position = stop
                 return .text(ByteRange(start: tokenStart, end: stop), needsDecoding: needsDecoding)
             }
@@ -216,6 +226,7 @@ struct XMLScanner {
         }
         let name = ByteRange(start: nameStart, end: i)
         guard !name.isEmpty else { throw malformed("empty element name") }
+        guard base[nameStart].isXMLNameStart else { throw malformed("element names cannot start with this character") }
 
         if recordingAttributes { attributeCount = 0 }
         while true {
@@ -246,6 +257,8 @@ struct XMLScanner {
             i &+= 1
         }
         let name = ByteRange(start: start, end: i)
+        guard i < end else { throw truncated() }
+        guard !name.isEmpty, base[start].isXMLNameStart else { throw malformed("invalid attribute name") }
         while i < end && base[i].isXMLWhitespace { i &+= 1 }
         guard i < end else { throw truncated() }
         guard base[i] == UInt8(ascii: "=") else { throw malformed("attribute without a value") }
@@ -308,7 +321,11 @@ struct XMLScanner {
     /// range for CDATA, and nil otherwise.
     private mutating func scanMarkupDeclaration() throws(XMLTVError) -> ByteRange? {
         if try hasPrefix("<!--") {
-            try skip(past: "-->", from: position &+ 4)
+            // `--` may appear in a comment only as part of its terminator.
+            let dashes = ByteSearch.first("--", in: base, from: position &+ 4, end: end)
+            guard dashes &+ 2 < end else { throw truncated() }
+            guard base[dashes &+ 2] == UInt8(ascii: ">") else { throw malformed("'--' inside a comment") }
+            position = dashes &+ 3
             return nil
         }
         if try hasPrefix("<![CDATA[") {
@@ -319,6 +336,7 @@ struct XMLScanner {
             return ByteRange(start: contentStart, end: close)
         }
         if try hasPrefix("<!DOCTYPE") {
+            guard isInProlog else { throw malformed("a DOCTYPE must come before the root element") }
             try skipDoctype()
             return nil
         }
@@ -383,6 +401,14 @@ struct XMLScanner {
 }
 
 extension UInt8 {
+    /// Whether the byte can begin an XML name: a letter, `_`, `:`, or the first byte of a
+    /// non-ASCII character. Non-ASCII name characters are not checked further.
+    @inline(__always) var isXMLNameStart: Bool {
+        let folded = self | 0x20
+        return (folded >= UInt8(ascii: "a") && folded <= UInt8(ascii: "z")) || self == UInt8(ascii: "_")
+            || self == UInt8(ascii: ":") || self >= 0x80
+    }
+
     /// XML's `S` production: space, tab, line feed, carriage return.
     @inline(__always) var isXMLWhitespace: Bool {
         self == 0x20 || self == 0x0A || self == 0x09 || self == 0x0D

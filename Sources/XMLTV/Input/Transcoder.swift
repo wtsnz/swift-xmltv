@@ -20,14 +20,22 @@ enum EncodingDetector {
         if let bom { return bom }
         if starts(with: [0x3C, 0x00, 0x3F, 0x00]) { return (.utf16LittleEndian, 0) }
         if starts(with: [0x00, 0x3C, 0x00, 0x3F]) { return (.utf16BigEndian, 0) }
+        if bytes.count >= declarationLimit, bytes.starts(with: "<?xml".utf8),
+           indexOf("?>", in: bytes.prefix(declarationLimit)) == nil {
+            throw XMLTVError(.malformedMarkup("the XML declaration is longer than 64 KiB"))
+        }
         guard let declared = declaredEncoding(bytes) else { return (.utf8, 0) }
         return (try encoding(named: declared), 0)
     }
 
+    /// How far to look for the end of the XML declaration. A declaration may contain any amount
+    /// of whitespace, so this is generous rather than tight; real ones are under 100 bytes.
+    static let declarationLimit = 64 << 10
+
     /// Whether `bytes` is enough of the document's start to detect its encoding: a BOM or UTF-16
     /// pattern, or a complete XML declaration, or no declaration at all.
     static func canDetect(_ bytes: UnsafeBufferPointer<UInt8>) -> Bool {
-        if bytes.count >= 1024 { return true }
+        if bytes.count >= declarationLimit { return true }
         guard bytes.count >= 5 else { return false }
         let start = bytes.first == 0xEF ? 3 : 0
         guard bytes.count >= start + 5 else { return false }
@@ -40,11 +48,12 @@ enum EncodingDetector {
         switch name.lowercased() {
         case "utf-8", "utf8", "us-ascii", "ascii":
             return .utf8
-        case "iso-8859-1", "iso8859-1", "iso_8859-1", "latin1", "latin-1", "l1", "cp819":
+        case "iso-8859-1", "iso8859-1", "iso_8859-1", "iso_8859-1:1987", "latin1", "latin-1", "l1",
+             "cp819", "ibm819", "iso-ir-100", "csisolatin1":
             return .latin1
-        case "iso-8859-15", "iso8859-15", "latin-9", "latin9":
+        case "iso-8859-15", "iso8859-15", "iso_8859-15", "latin-9", "latin9", "csisolatin9":
             return .latin9
-        case "windows-1252", "cp1252":
+        case "windows-1252", "windows1252", "cp1252", "x-cp1252", "cswindows1252":
             return .windows1252
         case "utf-16le":
             return .utf16LittleEndian
@@ -57,7 +66,7 @@ enum EncodingDetector {
 
     /// The value of `encoding` in a leading `<?xml … ?>` declaration, if there is one.
     private static func declaredEncoding(_ bytes: UnsafeBufferPointer<UInt8>) -> String? {
-        let prefix = bytes.prefix(1024)
+        let prefix = bytes.prefix(declarationLimit)
         guard prefix.starts(with: "<?xml".utf8) else { return nil }
         guard let close = indexOf("?>", in: prefix) else { return nil }
         let declaration = prefix[..<close]

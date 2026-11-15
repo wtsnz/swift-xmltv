@@ -418,10 +418,13 @@ struct APITests {
         #expect(bytes.counter.mainThreadCalls.load(ordering: .relaxed) == 0)
         #expect(bytes.counter.calls.load(ordering: .relaxed) > data.count)
 
-        // The probe does see main-thread reads: iterating it directly here makes them.
+        // The probe does see main-thread reads: iterating it directly here makes them. (On Apple
+        // platforms only: elsewhere the main actor need not run on the main thread.)
+        #if canImport(Darwin)
         let direct = ProbeBytes(data: [1, 2, 3])
         for await _ in direct {}
         #expect(direct.counter.mainThreadCalls.load(ordering: .relaxed) > 0)
+        #endif
     }
 
     @Test func bytesGatheredBeforeASourceErrorAreParsed() async throws {
@@ -590,7 +593,7 @@ struct ProbeBytes: AsyncSequence, Sendable {
 
         private mutating func advance() -> UInt8? {
             counter.calls.add(1, ordering: .relaxed)
-            if pthread_main_np() != 0 { counter.mainThreadCalls.add(1, ordering: .relaxed) }
+            if Thread.isMainThread { counter.mainThreadCalls.add(1, ordering: .relaxed) }
             defer { index += 1 }
             return index < data.count ? data[index] : nil
         }

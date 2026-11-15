@@ -75,7 +75,10 @@ when the feed overlaps two; ``XMLTVSchedule/onAir(_:at:)`` returns them all.
 
 In SwiftUI, list ``XMLTVSchedule/Entry`` values. Their ``XMLTVSchedule/Entry/id`` is built from
 the channel and start time, so the same programme keeps its identity when you parse a newer
-copy of the feed, and selection survives a refresh.
+copy of the feed, and selection survives a refresh. Two programmes that start together, as in
+a clump, are told apart by their order, so if a newer feed swaps them, their IDs swap too. For
+anything you persist, such as a reminder, store the title and times with the ID and check
+them when you look it up.
 
 ### Read the details
 

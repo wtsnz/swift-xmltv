@@ -23,8 +23,8 @@ There are three entry points, and they produce the same values:
 
 - ``XMLTVDocument`` reads a whole guide into memory, using every core. It is the fastest and
   the simplest.
-- ``XMLTVReader`` returns one record at a time from a file or `Data`. Its memory use depends on
-  the largest record, not the file.
+- ``XMLTVReader`` returns one record at a time from a file or `Data`. Its memory stays at a few
+  tens of megabytes, however large the file.
 - ``XMLTVItems`` decodes an `AsyncSequence` of bytes, such as a download, as they arrive.
 
 ``XMLTVSchedule`` then groups a guide's programmes by channel and answers "what is on now" and

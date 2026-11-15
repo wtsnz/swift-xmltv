@@ -15,6 +15,8 @@ import XMLTV
 ///   chunks          XMLTVItems over 64 KiB Data chunks read from the file
 ///   bytes           XMLTVItems(bytes:) over URLSession.AsyncBytes of the file URL
 ///   schedule        XMLTVSchedule built from an already parsed document
+///   json            JSONDecoder reading a cache of the programmes' common fields, written
+///                   once from the parsed file (untimed), for comparison with re-parsing
 ///
 /// Reports the median and range of wall time over the repetitions. Parse time excludes freeing
 /// the result, which is measured separately and reported as teardown.
@@ -101,12 +103,23 @@ func run() throws -> Sample {
             return ("\(count) items (async chunks)", ())
         }
     case "bytes":
+        #if canImport(Darwin)
         return try measure {
             let count = try blocking {
                 let (bytes, _) = try await URLSession.shared.bytes(from: url)
                 return try await countItems(XMLTVItems(bytes: bytes))
             }
             return ("\(count) items (URLSession.AsyncBytes)", ())
+        }
+        #else
+        print("URLSession.AsyncBytes is not available on this platform")
+        exit(2)
+        #endif
+    case "json":
+        let cache = try JSONEncoder().encode(try XMLTVDocument(contentsOf: url).programmes.map(CachedProgramme.init))
+        return try measure {
+            let programmes = try JSONDecoder().decode([CachedProgramme].self, from: cache)
+            return ("\(programmes.count) programmes from \(cache.count / 1_000_000) MB of JSON", programmes)
         }
     case "schedule":
         let document = try XMLTVDocument(contentsOf: url)
@@ -117,6 +130,34 @@ func run() throws -> Sample {
     default:
         print("unknown mode \(mode)")
         exit(2)
+    }
+}
+
+/// What an app might cache per programme instead of keeping the guide file: the fields a list
+/// shows, using the library's Codable leaf values.
+struct CachedProgramme: Codable {
+    var channelID: String
+    var start: XMLTVTimestamp
+    var stop: XMLTVTimestamp?
+    var titles: [LocalizedText]
+    var episodeTitles: [LocalizedText]
+    var descriptions: [LocalizedText]
+    var categories: [LocalizedText]
+    var icons: [Icon]
+    var date: String?
+    var episode: String?
+
+    init(_ programme: Programme) {
+        channelID = programme.channelID
+        start = programme.start
+        stop = programme.stop
+        titles = programme.titles
+        episodeTitles = programme.episodeTitles
+        descriptions = programme.descriptions
+        categories = programme.categories
+        icons = programme.icons
+        date = programme.date
+        episode = programme.episodeNumbers.first?.value
     }
 }
 

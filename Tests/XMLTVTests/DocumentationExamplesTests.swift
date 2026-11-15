@@ -73,6 +73,8 @@ struct DocumentationExamplesTests {
         #expect(reader.report.diagnosticCount == 0)
 
         // "Guides from the network", with a file URL standing in for the server.
+        // `URLSession.AsyncBytes` exists only on Apple platforms.
+        #if canImport(Darwin)
         let guideURL = url
         let (bytes, _) = try await URLSession.shared.bytes(from: guideURL)
         let items = XMLTVItems(bytes: bytes)
@@ -81,9 +83,18 @@ struct DocumentationExamplesTests {
         let report = try #require(items.report)
         #expect(!report.isTruncated)
         #expect(streamed == stored)
+        #endif
 
         let guide = try await GuideModel.load(url)
         #expect(guide.programmes.count == stored.count - guide.channels.count)
+
+        var reader2 = try XMLTVReader(contentsOf: url)
+        let count = try await Task.detached {
+            var count = 0
+            while try reader2.next() != nil { count += 1 }
+            return count
+        }.value
+        #expect(count == stored.count)
 
         let importer = Importer(reader: try XMLTVReader(contentsOf: url))
         #expect(try await importer.importNext() != nil)
@@ -95,6 +106,7 @@ struct DocumentationExamplesTests {
         #expect(imported.diagnosticCount == 0)
     }
 
+    #if canImport(Darwin)
     /// Compiled, not run: it needs a server.
     func downloadThenParse(_ guideURL: URL) async throws -> XMLTVDocument {
         struct BadStatus: Error {}
@@ -102,6 +114,7 @@ struct DocumentationExamplesTests {
         guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw BadStatus() }
         return try XMLTVDocument(contentsOf: file)
     }
+    #endif
 
     @Test func timestamps() throws {
         var options = XMLTVOptions()

@@ -14,7 +14,11 @@
 struct TextDecoder {
     enum Mode { case text, attribute, cdata }
 
-    var interner = Interner()
+    var interner: Interner
+
+    init(internerBudget: Int = Interner.documentArenaBudget) {
+        interner = Interner(arenaBudget: internerBudget)
+    }
     /// Reused output buffer for decoded or multi-piece text.
     private var scratch: [UInt8] = []
 

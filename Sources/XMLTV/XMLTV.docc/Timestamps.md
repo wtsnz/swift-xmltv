@@ -106,7 +106,10 @@ options.namedTimeZones["CET"] = 3_600
 let guide = try XMLTVDocument(contentsOf: url, options: options)
 ```
 
-Lookups try the name as written, then in upper case.
+Lookups try the name as written, then in upper case. A name must start with a letter and have
+no digit before any `+` or `-`, as `BST` and `GMT+1` do. Anything else after the digits is an
+invalid time, not an unknown zone: `20240101T120000Z`, the ISO form, is rejected rather than
+read as midnight in a zone called `T120000Z`.
 
 ### Out-of-range fields
 

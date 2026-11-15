@@ -20,12 +20,23 @@ import Glibc
 /// - Strings of 15 bytes or fewer are stored inline in `String` and never allocate, so they
 ///   bypass the table.
 /// - The table is bounded. Past the budget, lookups still hit but new strings are not added.
+///   A whole-document parse uses a large budget, as its result holds every string anyway. A
+///   streaming parse uses a small one, so that its memory stays small: the cache, and the
+///   strings it keeps alive, are most of what a reader holds.
 /// - The hash is seeded per interner, so crafted input cannot force collision chains.
 struct Interner {
     static let minimumLength = 16
     static let maximumLength = 4096
-    static let arenaBudget = 64 << 20
+    static let documentArenaBudget = 64 << 20
+    static let streamArenaBudget = 4 << 20
     static let initialCapacity = 1 << 14
+
+    /// The most key bytes to keep.
+    let arenaBudget: Int
+
+    init(arenaBudget: Int = Interner.documentArenaBudget) {
+        self.arenaBudget = arenaBudget
+    }
 
     private struct Slot {
         var hash: UInt64 = 0          // 0 marks an empty slot
@@ -59,7 +70,7 @@ struct Interner {
         if found { return slots[index].value }
 
         let (value, isCacheable) = try make(bytes)
-        guard isCacheable, arena.count &+ bytes.count <= Interner.arenaBudget else { return value }
+        guard isCacheable, arena.count &+ bytes.count <= arenaBudget else { return value }
         slots[index] = Slot(hash: hash, keyOffset: Int32(arena.count), keyLength: Int32(bytes.count), value: value)
         arena.append(contentsOf: bytes)
         occupied &+= 1

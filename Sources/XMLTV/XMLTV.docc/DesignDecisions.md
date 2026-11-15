@@ -14,8 +14,9 @@ and `Hashable`, and it lives on after the parse.
 
 The alternative was to hand out views that point into the input buffer and decode on access.
 The prototype measured that ceiling at 26 GB/s, against about 4.4 GB/s for owned values, so
-views are much faster. But a view cannot cross an `await` and cannot be stored, and one view
-keeps the whole input buffer alive, which could be gigabytes. Almost every real consumer copies
+views are much faster. A view borrowed for the scope of a callback cannot cross an `await` or
+be stored. A view that owns a reference to the buffer can, but then one view keeps the whole
+input alive, which could be gigabytes. Almost every real consumer copies
 the strings out anyway, into a database, a UI or JSON, so views would move the cost rather than
 remove it.
 
@@ -73,7 +74,7 @@ then committed in offset order. This sounds like bookkeeping, but three things d
 - A streaming retry can abandon half a record and drop exactly its diagnostics.
 - Parallel, serial and streaming parses produce identical reports.
 
-That last point is tested at every chunk size.
+That last point is tested at chunk sizes from one byte up.
 
 ### Parallel parsing by guessing and checking
 
@@ -114,6 +115,10 @@ Each worker keeps a table of the strings it has made, keyed by their bytes. The 
 covered only short vocabulary: channel IDs, languages, categories. Measurement showed that
 descriptions repeat too, in reruns and looping channels. Interning everything up to 4 KiB made
 the 1.93 GB parse about 10% faster and lowered peak memory by about 6%.
+
+A whole-document parse keeps up to 64 MiB of keys, since its result holds every string anyway.
+The streaming entry points keep 4 MiB. With 64 MiB, a reader of the 1.93 GB feed peaked at
+330 MiB of memory; with 4 MiB it peaks at 40 MiB, at the same speed.
 
 Each worker has its own table, so no locks are needed. Sharing strings across cores would turn
 every retain of a popular string into contended atomic traffic. Strings of 15 bytes or fewer
@@ -199,7 +204,8 @@ over one an app had declared, and the app's identities would change without an e
 honestly: the channel, the start instant, and the entry's position among those that start at
 that instant. Exact duplicates are dropped first, so the position separates the members of a
 clump and overlapping records, and the same programme keeps its ID when a newer copy of the
-feed is parsed. A position in the document, the other candidate, changes whenever an earlier
+feed is parsed. The one weakness is order: if a feed swaps two programmes that start together,
+their IDs swap. No scheme avoids that without an identifier in the feed. A position in the document, the other candidate, changes whenever an earlier
 programme is added or removed, which happens on every refresh.
 
 ### A schedule, not inferred stop times
@@ -219,9 +225,10 @@ record of the source.
   feeds that have not been seen in practice.
 - **Keeping unknown elements.** They are skipped. Keeping them would need a generic tree type in
   the public API.
-- **`Codable` on `Programme` and `Channel`.** Re-parsing the downloaded `.xml.gz` is several
-  times faster than decoding the same records from JSON, and the file is a fraction of the
-  size, so the library recommends caching the file. A conformance would also be a second
+- **`Codable` on `Programme` and `Channel`.** Re-parsing the downloaded `.xml.gz` is about 20
+  times faster than decoding even a reduced set of the same fields from JSON, and the file is
+  an eighth of the size (the `json` benchmark mode), so the library recommends caching the
+  file. A conformance would also be a second
   compatibility contract, and, like `Identifiable`, would silently replace one an app had
   written. The small values apps embed in their own records, such as ``XMLTVTimestamp``,
   ``LocalizedText``, ``Icon`` and ``URLReference``, are `Codable`.

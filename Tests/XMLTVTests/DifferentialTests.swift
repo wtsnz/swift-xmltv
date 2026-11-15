@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationXML)
+import FoundationXML   // XMLParser, on Linux
+#endif
 import Testing
 import XMLTV
 

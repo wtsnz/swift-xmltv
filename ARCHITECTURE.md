@@ -5,7 +5,11 @@ This document is for people changing the library. For using it, see the DocC doc
 
 ## Layers
 
-Each layer calls only the one below it. Only the API and model are public.
+Each layer uses only the layers below it. Only the API and model are public. A few small
+types cross layers by design: `XMLTVTimestamp` and the error types (Model and API) are what
+the lower layers produce, `Diagnostics` (Decoder) is passed into `TextDecoder` (Values) so
+text problems are reported where they are found, and `ByteSearch` (Scanner) serves the input
+layer's encoding detection.
 
 ```
 API       XMLTVDocument  XMLTVReader  XMLTVItems  XMLTVSchedule  XMLTVOptions  XMLTVError  XMLTVReport
@@ -21,12 +25,12 @@ Input     DocumentInput  GzipInflater  EncodingDetector  Transcoder  ByteBuffer
 | Directory | What lives there |
 |---|---|
 | `Sources/XMLTV/API` | public entry points, options, errors, report, and the schedule built on a document |
-| `Sources/XMLTV/Model` | public value types; no parsing logic |
+| `Sources/XMLTV/Model` | public value types; no document parsing, though some values interpret their own text, as `EpisodeNumber.onscreen` does |
 | `Sources/XMLTV/Drivers` | how input reaches the decoder: whole buffer in parallel, or a window |
 | `Sources/XMLTV/Decoder` | XMLTV semantics: which element means what |
 | `Sources/XMLTV/Values` | bytes to strings, timestamps and validated text |
 | `Sources/XMLTV/Scanner` | XML tokens; the only code that reads 16 bytes at a time |
-| `Sources/XMLTV/Input` | files, gzip and encodings, producing UTF-8 |
+| `Sources/XMLTV/Input` | files, gzip and encodings, producing UTF-8; `FileInput` for the reader; `UncheckedSendable` for the parallel loops |
 | `Sources/CZlib` | system zlib module map |
 | `Benchmarks/xmltv-bench` | benchmark harness and the Foundation baseline |
 | `Tests/XMLTVTests` | the test suite and its fixtures |

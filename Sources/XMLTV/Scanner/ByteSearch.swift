@@ -20,9 +20,9 @@ enum ByteSearch {
 
     /// Bytes that force a text value off the copy-free path: entity references and carriage
     /// returns (XML line-end normalisation).
-    @usableFromInline static let ampersand = Block(repeating: UInt8(ascii: "&"))
-    @usableFromInline static let carriageReturn = Block(repeating: 0x0D)
-    @usableFromInline static let lessThan = Block(repeating: UInt8(ascii: "<"))
+    static let ampersand = Block(repeating: UInt8(ascii: "&"))
+    static let carriageReturn = Block(repeating: 0x0D)
+    static let lessThan = Block(repeating: UInt8(ascii: "<"))
 
     /// Packs a 16-lane comparison mask into a `UInt64` with four bits per lane.
     ///
@@ -121,20 +121,37 @@ enum ByteSearch {
         }
     }
 
-    /// Number of `\n` bytes in `base[from..<end]`. Used only to compute line numbers on error
-    /// paths and when the streaming reader discards consumed input.
+    /// Number of line ends in `base[from..<end]`, counted as XML normalises them: a CR LF pair,
+    /// a lone LF and a lone CR are one each. A CR at `end - 1` counts as a lone CR. Used only to
+    /// compute line numbers on error paths and when the streaming reader discards input.
     static func countNewlines(in base: UnsafePointer<UInt8>, from: Int, end: Int) -> Int {
+        @inline(__always) func isLoneCR(_ i: Int) -> Bool {
+            base[i] == 0x0D && (i &+ 1 >= end || base[i &+ 1] != 0x0A)
+        }
         var count = 0
         var i = from
         let newline = Block(repeating: 0x0A)
         while i &+ 16 <= end {
-            count &+= nibbleMask(load(base, i) .== newline).nonzeroBitCount &>> 2
+            let block = load(base, i)
+            count &+= nibbleMask(block .== newline).nonzeroBitCount &>> 2
+            // A CR is a line end only when no LF follows. Most files have none, or CR LF pairs.
+            if nibbleMask(block .== carriageReturn) != 0 {
+                for k in i..<(i &+ 16) where isLoneCR(k) { count &+= 1 }
+            }
             i &+= 16
         }
         while i < end {
-            if base[i] == 0x0A { count &+= 1 }
+            if base[i] == 0x0A || isLoneCR(i) { count &+= 1 }
             i &+= 1
         }
         return count
+    }
+
+    /// The index of the first byte of the line containing `offset`: just after the nearest LF or
+    /// CR before it, or `floor` when there is none at or after `floor`.
+    static func lineStart(of offset: Int, in base: UnsafePointer<UInt8>, floor: Int = 0) -> Int {
+        var i = offset
+        while i > floor && base[i &- 1] != 0x0A && base[i &- 1] != 0x0D { i &-= 1 }
+        return i
     }
 }

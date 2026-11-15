@@ -78,7 +78,9 @@ enum DocumentInput {
             var inflated = ByteBuffer()
             let problem = try GzipInflater.inflateAll(raw, into: &inflated)
             if let problem, options.policy == .strict { throw XMLTVError(problem) }
-            return try withUTF8(inflated.bytes, options: options) { bytes, info throws(XMLTVError) in
+            // Decompressed once only: gzip inside gzip is not XMLTV, as the streaming driver also
+            // decides.
+            return try transcoded(inflated.bytes, options: options) { bytes, info throws(XMLTVError) in
                 var info = info
                 info.inputByteCount = raw.count
                 // Compression problems come before encoding ones, as the streaming driver finds
@@ -87,7 +89,14 @@ enum DocumentInput {
                 return try body(bytes, info)
             }
         }
+        return try transcoded(raw, options: options, body)
+    }
 
+    /// Detects the encoding of uncompressed bytes and transcodes them to UTF-8 if needed.
+    private static func transcoded<R>(
+        _ raw: UnsafeBufferPointer<UInt8>, options: XMLTVOptions,
+        _ body: (UnsafeBufferPointer<UInt8>, InputInfo) throws(XMLTVError) -> R
+    ) throws(XMLTVError) -> R {
         let (encoding, bomLength) = try EncodingDetector.detect(raw, override: options.encoding)
         let content = UnsafeBufferPointer(rebasing: raw[bomLength...])
         if encoding == .utf8 { return try body(content, InputInfo(encoding: .utf8, inputByteCount: raw.count)) }

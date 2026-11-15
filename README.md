@@ -17,8 +17,9 @@ for channelID in schedule.channelIDs {
 }
 ```
 
-Swift 6.2.3 or later. macOS 15, iOS 18, tvOS 18, watchOS 11, visionOS 2. No dependencies beyond
-the system zlib.
+Swift 6.2.3 or later. macOS 15, iOS 18, tvOS 18, watchOS 11, visionOS 2, and Linux, where the
+test suite passes with Swift 6.2.3; `XMLTVItems(bytes:)` with `URLSession.AsyncBytes` is
+Apple-only, because Linux Foundation lacks it. No dependencies beyond the system zlib.
 
 ```swift
 .package(url: "https://github.com/wtsnz/swift-xmltv.git", .upToNextMinor(from: "0.1.0"))
@@ -38,7 +39,7 @@ let guide = try XMLTVDocument(contentsOf: url)
 // Only some channels. Other programmes are skipped without being decoded.
 let mine = try XMLTVDocument(contentsOf: url, options: XMLTVOptions(channelIDs: ["BBC.One.uk", "ITV1.uk"]))
 
-// One record at a time, in constant memory.
+// One record at a time, in a few tens of megabytes, however large the file.
 var reader = try XMLTVReader(contentsOf: url)
 while let item = try reader.next() { … }
 
@@ -49,8 +50,8 @@ for try await item in items { … }
 if items.report?.isTruncated == true { … }               // the download was cut off
 ```
 
-All three produce identical records and reports. The tests check this at every chunk size down
-to one byte. For a guide on the network, downloading to a file and using `XMLTVDocument` is
+All three produce identical records and reports. The tests check this at chunk sizes from one
+byte up, in lenient and strict mode. For a guide on the network, downloading to a file and using `XMLTVDocument` is
 simpler and faster still.
 
 ## Speed
@@ -61,7 +62,7 @@ The Foundation baseline below was run once, as it takes 39 seconds.
 | Feed | Size | `XMLTVDocument` | One thread | Keeping 1/64 of channels |
 |---|---:|---:|---:|---:|
 | epgshare01 ALL_SOURCES | 1.93 GB | 442 ms, 4.36 GB/s | 0.56 GB/s | 15.5 GB/s |
-| epgshare01 US2 | 78 MB | 18.2 ms, 4.29 GB/s | 0.56 GB/s | 13.6 GB/s |
+| epgshare01 US2 | 78 MB | 18.2 ms, 4.29 GB/s | 0.56 GB/s | 13.8 GB/s |
 | Plex US | 15.5 MB | 4.5 ms, 3.48 GB/s | 0.59 GB/s | 8.6 GB/s |
 
 On the 1.93 GB feed, Foundation's `XMLParser` runs at 0.05 GB/s while building fewer fields, so
@@ -121,7 +122,7 @@ swift build -c release && .build/release/xmltv-bench document path/to/guide.xml
 The suite includes:
 - a differential test against an independent Foundation-based decoder
 - parallel-equals-serial tests on a document built to defeat the parallel splitter
-- streaming tests at every chunk size
+- streaming tests at chunk sizes from one byte up
 - truncation at every third byte, and random byte mutation
 - a regression test for each defect found in code review
 

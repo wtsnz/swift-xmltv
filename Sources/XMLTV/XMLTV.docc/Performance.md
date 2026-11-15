@@ -14,7 +14,7 @@ field, unless the column says otherwise.
 | Feed | Size | ``XMLTVDocument`` | One thread | ``XMLTVReader`` | Keeping 1/64 of channels |
 |---|---:|---:|---:|---:|---:|
 | epgshare01 ALL_SOURCES | 1.93 GB | 442 ms, 4.36 GB/s | 0.56 GB/s | 0.47 GB/s | 15.5 GB/s |
-| epgshare01 US2, dense | 78 MB | 18.2 ms, 4.29 GB/s | 0.56 GB/s | 0.48 GB/s | 13.6 GB/s |
+| epgshare01 US2, dense | 78 MB | 18.2 ms, 4.29 GB/s | 0.56 GB/s | 0.48 GB/s | 13.8 GB/s |
 | epgshare01 DE1, many credits | 25 MB | 7.2 ms, 3.52 GB/s | 0.55 GB/s | 0.46 GB/s | 9.9 GB/s |
 | Plex US, sparse | 15.5 MB | 4.5 ms, 3.48 GB/s | 0.59 GB/s | 0.47 GB/s | 8.6 GB/s |
 | Pluto TV US | 7.7 MB | 2.8 ms, 2.81 GB/s | 0.59 GB/s | 0.49 GB/s | 8.0 GB/s |
@@ -38,7 +38,7 @@ swift build -c release
 ```
 
 Its modes are `document`, `document-mmap`, `serial`, `reader`, `filter`, `foundation`,
-`chunks`, `bytes` and `schedule`.
+`chunks`, `bytes`, `schedule` and `json`.
 
 The other paths, on the 15.5 MB Plex feed unless noted:
 
@@ -48,6 +48,8 @@ The other paths, on the 15.5 MB Plex feed unless noted:
 | ``XMLTVItems`` over 64 KiB `Data` chunks | 35 ms, 0.44 GB/s |
 | ``XMLTVItems/init(bytes:chunkSize:options:)`` over `URLSession.AsyncBytes` of a file URL | 64 ms, 0.24 GB/s |
 | ``XMLTVSchedule`` from the parsed 78 MB US2 feed, 82,000 programmes | 17 ms |
+| `JSONDecoder` on a cache of the common fields of the UK feed's 42,000 programmes, 23 MB | 350 ms |
+| ``XMLTVDocument`` re-parsing the same UK feed from its 3 MB `.xml.gz` | 15 ms |
 
 The streaming modes decode every record and discard it, as an importer would after storing it.
 Gathering single bytes into chunks is the cost of the `bytes` path: the byte loop is
@@ -66,7 +68,7 @@ than the fixed cost per element. On one core:
 - a fifth to allocation and reference counting
 - the rest to the decoder's own logic and array growth
 
-Each core does about 0.56 GB/s. With 16 cores the parallel parse reaches about 8.8 times that,
+Each core does about 0.56 GB/s. With 16 cores the parallel parse reaches about 7.8 times that,
 not 16. Two things account for most of the gap:
 - The efficiency cores are about half as fast as the performance cores.
 - Profiles show threads waiting on locks inside `malloc`, so allocation is the likely limit on

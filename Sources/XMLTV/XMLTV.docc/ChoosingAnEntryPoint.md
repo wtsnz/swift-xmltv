@@ -6,7 +6,7 @@ and actors.
 ## Overview
 
 All three entry points use the same decoder, so they produce identical channels, programmes
-and reports. The test suite checks this at every chunk size down to one byte. They differ in
+and reports. The test suite checks this at chunk sizes from one byte up. They differ in
 how much they hold in memory, whether they use more than one core, and when the first record
 is available.
 
@@ -14,7 +14,7 @@ is available.
 |---|---|---|---|
 | Input | file, `Data`, or chunks | file, `Data` | `AsyncSequence` of byte chunks or bytes |
 | Cores | all, for files and `Data` of 1 MiB or more; one for chunks | one | one |
-| Memory | the whole result, plus the input | about one record, plus a 1 MiB read buffer | about one record, plus unread chunks |
+| Memory | the whole result, plus the input | bounded: a 1 MiB read buffer, a 4 MiB string cache and one record | bounded, as for the reader, plus unread chunks |
 | First record | after the whole parse | immediately | as soon as its bytes arrive |
 
 For a guide on the network, download it to a file and use ``XMLTVDocument``, unless you need
@@ -57,6 +57,10 @@ while let item = try reader.next() {
 print(reader.report.diagnosticCount, "problems recovered")
 ```
 
+Peak memory stays small however large the file: about 40 MiB for the whole process while
+reading the 1.93 GB feed, against about 5 GB for ``XMLTVDocument``. Most of it is a cache of
+recent strings, which makes repeated text cheap and is capped at 4 MiB of keys.
+
 A reader is a single pass over its input, so it is noncopyable: a copy would be a second owner
 taking records from the same cursor. The compiler enforces this, which means a reader is held
 a little differently from other values:
@@ -85,8 +89,9 @@ An error page from the server is reported as ``XMLTVError/Kind/notXMLTV``, wheth
 HTML, JSON or plain text. ``XMLTVDocument/init(contentsOf:options:)`` takes only file URLs and
 throws ``XMLTVError/Kind/notAFileURL(_:)`` for others.
 
-Keep the downloaded file as your cache. Parsing it again is several times faster than decoding
-the same records from JSON, and the compressed file is a fraction of the size.
+Keep the downloaded file as your cache. On the UK feed, parsing the 3 MB `.xml.gz` again takes
+15 ms, while decoding a JSON cache of only the common fields takes 350 ms and is 23 MB. The
+benchmark harness's `json` mode reproduces this.
 
 ### Records as they download
 
@@ -180,6 +185,17 @@ actor Importer {
 }
 
 let importer = Importer(reader: try XMLTVReader(contentsOf: file))
+```
+
+To read in a task instead, capture the reader's variable. The task takes it over:
+
+```swift
+var reader = try XMLTVReader(contentsOf: file)
+let count = try await Task.detached {
+    var count = 0
+    while try reader.next() != nil { count += 1 }
+    return count
+}.value
 ```
 
 #### Iterate items in an actor

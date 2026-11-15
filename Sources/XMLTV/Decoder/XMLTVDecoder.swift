@@ -39,7 +39,7 @@ struct XMLTVDecoder {
     }
 
     var scanner: XMLScanner
-    var text = TextDecoder()
+    var text: TextDecoder
     var diagnostics: Diagnostics
     private(set) var phase: Phase
     private(set) var info: TVInfo?
@@ -56,16 +56,24 @@ struct XMLTVDecoder {
     /// arrive in runs per channel, so this skips decoding, interning and the selection test.
     private var lastChannelRaw: [UInt8] = []
     private var lastChannel = (id: "", isSelected: false)
+    /// False until a channel has been cached. An empty attribute must not match the initial
+    /// empty `lastChannelRaw`.
+    private var hasLastChannel = false
 
-    init(scanner: XMLScanner, phase: Phase, options: XMLTVOptions, recordsDiagnosticOffsets: Bool) {
+    init(
+        scanner: XMLScanner, phase: Phase, options: XMLTVOptions, recordsDiagnosticOffsets: Bool,
+        internerBudget: Int = Interner.documentArenaBudget
+    ) {
+        self.text = TextDecoder(internerBudget: internerBudget)
         self.scanner = scanner
+        self.scanner.isInProlog = phase == .prolog
         self.phase = phase
         self.diagnostics = Diagnostics(
             policy: options.policy, sampleLimit: options.diagnosticLimit, recordsOffsets: recordsDiagnosticOffsets)
         self.namedTimeZones = options.namedTimeZones
         self.channelIDs = options.channelIDs
         self.timeWindow = options.timeWindow.map {
-            Int64($0.lowerBound.timeIntervalSince1970.rounded(.down))..<Int64($0.upperBound.timeIntervalSince1970.rounded(.up))
+            XMLTVTimestamp.seconds($0.lowerBound, rounding: .down)..<XMLTVTimestamp.seconds($0.upperBound, rounding: .up)
         }
     }
 
@@ -83,21 +91,26 @@ struct XMLTVDecoder {
     }
 
     private mutating func decodeNext(boundary: Int) throws(XMLTVError) -> TopLevelItem {
-        if phase == .finished {
-            scanner.position = scanner.end
-            return .end
-        }
-        while true {
-            let token = try scanner.next()
-            switch phase {
-            case .prolog:
+        switch phase {
+        case .prolog:
+            while true {
+                let token: XMLToken
+                do {
+                    token = try scanner.next()
+                } catch where error.kind != .unexpectedEndOfInput {
+                    // Broken markup before the root means the input is not a guide at all,
+                    // typically an HTML error page.
+                    throw XMLTVError(.notXMLTV, byteOffset: error.byteOffset)
+                }
                 if try prolog(token) {
                     elementStart = scanner.tokenStart
                     return .skipped
                 }
+            }
 
-            case .body:
-                switch token {
+        case .body:
+            while true {
+                switch try scanner.next() {
                 case .startTag(let name, let isEmpty):
                     if scanner.tokenStart >= boundary {
                         scanner.position = scanner.tokenStart
@@ -126,26 +139,54 @@ struct XMLTVDecoder {
                 case .endOfInput:
                     throw scanner.truncated()
                 }
+            }
 
-            case .epilog:
-                switch token {
-                case .endOfInput:
-                    return .end
-                case .text(let range, _) where isWhitespace(range):
-                    continue
-                default:
-                    // Typically a second document appended to the first. Reported once; the rest
-                    // of the input is ignored.
-                    try diagnostics.report(.contentAfterRoot, .restOfInputIgnored, at: scanner.tokenStart)
-                    phase = .finished
-                    scanner.position = scanner.end
-                    return .end
-                }
+        case .epilog:
+            return try decodeEpilog()
 
-            case .finished:
-                preconditionFailure("handled before the loop")
+        case .finished:
+            scanner.position = scanner.end
+            return .end
+        }
+    }
+
+    /// Reads what follows `</tv>`. Whitespace, comments and processing instructions are allowed.
+    /// Anything else, including broken markup, is typically a second document appended to the
+    /// first: it is reported once, at its first byte, and the rest of the input is ignored. Input
+    /// that ends partway through a comment there is the same, not a truncated guide.
+    private mutating func decodeEpilog() throws(XMLTVError) -> TopLevelItem {
+        while true {
+            var start = scanner.position
+            while start < scanner.end && scanner.byte(start).isXMLWhitespace { start &+= 1 }
+            scanner.position = start
+            if start == scanner.end { return .end }
+
+            let token: XMLToken
+            do {
+                token = try scanner.next()
+            } catch where error.kind == .unexpectedEndOfInput && !scanner.isComplete {
+                throw error   // a streaming window: wait for more input
+            } catch {
+                return try contentAfterRoot(at: error.kind == .unexpectedEndOfInput ? start : error.byteOffset)
+            }
+            switch token {
+            case .endOfInput:
+                return .end
+            case .text(let range, _):
+                var first = range.start
+                while first < range.end && scanner.byte(first).isXMLWhitespace { first &+= 1 }
+                if first < range.end { return try contentAfterRoot(at: first) }
+            case .startTag, .endTag, .cdata:
+                return try contentAfterRoot(at: scanner.tokenStart)
             }
         }
+    }
+
+    private mutating func contentAfterRoot(at offset: Int) throws(XMLTVError) -> TopLevelItem {
+        try diagnostics.report(.contentAfterRoot, .restOfInputIgnored, at: offset)
+        phase = .finished
+        scanner.position = scanner.end
+        return .end
     }
 
     /// Handles a token before the root element. Returns true once `<tv>` has been read.
@@ -161,10 +202,11 @@ struct XMLTVDecoder {
                 throw XMLTVError(.notXMLTV, byteOffset: scanner.tokenStart)
             }
             info = try decodeTVInfo()
+            scanner.isInProlog = false
             phase = isEmpty ? .epilog : .body
             return true
         case .endTag, .cdata:
-            throw scanner.malformed("content before the root element")
+            throw XMLTVError(.notXMLTV, byteOffset: scanner.tokenStart)
         case .endOfInput:
             throw scanner.truncated()
         }
@@ -172,7 +214,8 @@ struct XMLTVDecoder {
 
     private mutating func decodeTVInfo() throws(XMLTVError) -> TVInfo {
         var info = TVInfo()
-        for index in 0..<scanner.attributeCount {
+        // In reverse, so that the first occurrence of a repeated attribute is the one kept.
+        for index in (0..<scanner.attributeCount).reversed() {
             let attribute = scanner.attribute(at: index)
             let name = attribute.name
             if scanner.bytes(name, equal: "date") { info.date = try string(attribute) }
@@ -238,7 +281,7 @@ struct XMLTVDecoder {
     @inline(__always)
     mutating func channel(_ attribute: RawAttribute) throws(XMLTVError) -> (id: String, isSelected: Bool) {
         let raw = scanner.pointer(to: attribute.value)
-        let isRepeat = lastChannelRaw.count == raw.count && lastChannelRaw.withUnsafeBufferPointer {
+        let isRepeat = hasLastChannel && lastChannelRaw.count == raw.count && lastChannelRaw.withUnsafeBufferPointer {
             raw.isEmpty || memcmp($0.baseAddress!, raw.baseAddress!, raw.count) == 0
         }
         if isRepeat { return lastChannel }
@@ -251,19 +294,23 @@ struct XMLTVDecoder {
             lastChannelRaw.removeAll(keepingCapacity: true)
             lastChannelRaw.append(contentsOf: raw)
             lastChannel = decoded
+            hasLastChannel = true
         }
         return decoded
     }
 
     /// Whether ``XMLTVOptions/timeWindow`` may select a programme. Programmes whose times cannot
-    /// be compared exactly are kept.
+    /// be compared exactly are kept whenever they may overlap: an unknown zone keeps the
+    /// programme, and a partial time such as `2024` is taken as the whole period it names, so
+    /// the programme may start as early as the period's start and stop as late as its end.
     @inline(__always)
     func isInTimeWindow(start: XMLTVTimestamp, stop: XMLTVTimestamp?) -> Bool {
         guard let timeWindow else { return true }
         guard start.isTimeZoneKnown, stop?.isTimeZoneKnown ?? true else { return true }
         guard start.secondsSince1970 < timeWindow.upperBound else { return false }
         guard let stop else { return true }
-        return stop.secondsSince1970 > timeWindow.lowerBound
+        let latestStop = stop.precision == .second ? stop.secondsSince1970 : stop.periodEndSecondsSince1970 &- 1
+        return latestStop > timeWindow.lowerBound
     }
 
     // MARK: Shared element readers
@@ -366,9 +413,9 @@ struct XMLTVDecoder {
         try text.attribute(attribute, in: scanner, diagnostics: &diagnostics)
     }
 
-    @inline(__always)
     /// Parses a timestamp attribute. `ifInvalid` says what an unparseable value costs: by default
     /// only the value, but for a programme's `start`, the whole programme.
+    @inline(__always)
     mutating func timestamp(
         _ attribute: RawAttribute, ifInvalid recovery: XMLTVDiagnostic.Recovery = .valueDropped
     ) throws(XMLTVError) -> XMLTVTimestamp? {
@@ -382,7 +429,10 @@ struct XMLTVDecoder {
         case .normalized(let timestamp):
             try diagnostics.report(.invalidTimestamp(scanner.string(attribute.value)), .repaired, at: attribute.value.start)
             return timestamp
-        case .unresolvedZone(let timestamp, let zone):
+        case .unresolvedZone(let timestamp, let zone, let isNormalized):
+            if isNormalized {
+                try diagnostics.report(.invalidTimestamp(scanner.string(attribute.value)), .repaired, at: attribute.value.start)
+            }
             try diagnostics.report(.unresolvedTimeZone(zone), .assumedDefault, at: attribute.value.start)
             return timestamp
         case .invalid:
@@ -404,12 +454,16 @@ struct XMLTVDecoder {
         var i = 0, end = bytes.count
         while i < end && bytes[i].isXMLWhitespace { i += 1 }
         while end > i && bytes[end - 1].isXMLWhitespace { end -= 1 }
-        guard i < end, end - i <= 18 else { return nil }
+        guard i < end else { return nil }
         var value = 0
         while i < end {
             let digit = Int(bytes[i]) - 48
             guard (0...9).contains(digit) else { return nil }
-            value = value * 10 + digit
+            // Overflow-checked: `Int` is 32 bits on watchOS.
+            let (shifted, o1) = value.multipliedReportingOverflow(by: 10)
+            let (sum, o2) = shifted.addingReportingOverflow(digit)
+            guard !o1 && !o2 else { return nil }
+            value = sum
             i += 1
         }
         return value

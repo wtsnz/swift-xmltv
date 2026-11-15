@@ -48,7 +48,8 @@ public struct XMLTVSchedule: Sendable {
         /// The same programme gets the same ID in a schedule built from a later parse of the
         /// feed, as long as the programmes that share its channel and start are the same and in
         /// the same order, so SwiftUI keeps selection and row state across a refresh. IDs are
-        /// `Codable`, to restore a selection or keep a reminder.
+        /// `Codable`, to restore a selection. Feeds give broadcasts no identity of their own, so
+        /// for a reminder, also store what the ID pointed to and check it when you look it up.
         public struct ID: Sendable, Hashable, Codable {
             /// The channel's ID.
             public var channelID: String
@@ -127,7 +128,7 @@ public struct XMLTVSchedule: Sendable {
 
         /// A date as whole seconds, rounded towards the past, the resolution of XMLTV times.
         static func seconds(_ date: Date) -> Int64 {
-            Int64(date.timeIntervalSince1970.rounded(.down))
+            XMLTVTimestamp.seconds(date, rounding: .down)
         }
     }
 
@@ -274,7 +275,15 @@ public struct XMLTVSchedule: Sendable {
     /// When programmes overlap, the later one has usually replaced the earlier, as when a feed
     /// does not shorten a programme that a schedule change cut short.
     public func current(_ channelID: String, at date: Date) -> Entry? {
-        onAir(channelID, at: date).last
+        guard let timeline = timelines[channelID] else { return nil }
+        let seconds = Entry.seconds(date)
+        // Backwards from the last entry that has started: the first on air is the latest start.
+        var index = Self.firstStart(after: seconds, in: timeline.entries) - 1
+        while index >= 0 && timeline.latestEnd[index] > seconds {
+            if timeline.entries[index].isOnAir(at: date) { return timeline.entries[index] }
+            index -= 1
+        }
+        return nil
     }
 
     /// The channel's programmes on air at `date`, in start order. Usually one; more where the

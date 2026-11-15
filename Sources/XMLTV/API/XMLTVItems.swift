@@ -59,7 +59,7 @@ public struct XMLTVItems<Chunks: AsyncSequence>: AsyncSequence where Chunks.Elem
     ///
     /// An iterator is a single cursor: copies of it share their position, so advancing one
     /// advances all of them. Advance it from one task at a time: two tasks interleaving calls,
-    /// even through an actor, can hand the decoder chunks out of order. To iterate from an
+    /// even on one actor, stop the program with a precondition failure. To iterate from an
     /// actor, keep the iterator in a local variable of an actor method, and call
     /// ``next(isolation:)``.
     public struct AsyncIterator: AsyncIteratorProtocol {
@@ -73,6 +73,12 @@ public struct XMLTVItems<Chunks: AsyncSequence>: AsyncSequence where Chunks.Elem
 
         /// The next channel or programme, or nil at the end of the document.
         public mutating func next(isolation actor: isolated (any Actor)? = #isolation) async throws -> XMLTVItem? {
+            // Copies share one cursor. Two tasks on one actor can still interleave calls across
+            // the `await` below, which would hand the decoder chunks out of order; make that a
+            // clear failure rather than corrupt output.
+            precondition(!state.isAdvancing, "An XMLTVItems iterator was advanced by two tasks at once")
+            state.isAdvancing = true
+            defer { state.isAdvancing = false }
             state.hasStarted = true
             while true {
                 switch try state.decoder.next() {
@@ -112,6 +118,7 @@ public struct XMLTVItems<Chunks: AsyncSequence>: AsyncSequence where Chunks.Elem
         var decoder: StreamDecoder
         var isFinished = false
         var hasStarted = false
+        var isAdvancing = false
         private var isPublished = false
         let outcome: Outcome
 

@@ -41,7 +41,8 @@ final class GzipInflater {
 
     /// Inflates all of `input`, appending the output to `output`.
     func inflate(_ input: UnsafeBufferPointer<UInt8>, into output: inout ByteBuffer) throws(XMLTVError) {
-        guard !ignoresRemainingInput, var rest = input.baseAddress.map({ UnsafeBufferPointer(start: $0, count: input.count) }) else { return }
+        guard !ignoresRemainingInput, !input.isEmpty else { return }
+        var rest = input
         if let first = pendingMagicByte {
             guard let second = rest.first else { return }
             pendingMagicByte = nil
@@ -50,9 +51,10 @@ final class GzipInflater {
             let magic: [UInt8] = [first]
             try magic.withUnsafeBufferPointer { magic throws(XMLTVError) in try feed(magic, into: &output) }
         }
-        // zlib counts input in 32-bit units, so very large inputs go in slices.
+        // zlib counts input in 32-bit units, so very large inputs go in slices. On 32-bit
+        // platforms such as watchOS, `Int` cannot hold `UInt32.max`, so the limit is clamped.
         while !rest.isEmpty && !ignoresRemainingInput {
-            let slice = UnsafeBufferPointer(rebasing: rest.prefix(Int(UInt32.max)))
+            let slice = UnsafeBufferPointer(rebasing: rest.prefix(Int(clamping: UInt32.max)))
             try feed(slice, into: &output)
             rest = UnsafeBufferPointer(rebasing: rest.dropFirst(slice.count))
         }
@@ -81,7 +83,7 @@ final class GzipInflater {
                 }
             }
             let space = output.unusedCapacity(atLeast: 256 << 10)
-            let writable = min(space.count, Int(UInt32.max))
+            let writable = min(space.count, Int(clamping: UInt32.max))
             stream.pointee.next_out = space.baseAddress
             stream.pointee.avail_out = UInt32(writable)
 
@@ -110,15 +112,20 @@ final class GzipInflater {
 
     /// Decompresses a complete in-memory gzip file into `output`, which should be empty. The
     /// output is pre-sized from the trailer's ISIZE field: the uncompressed size mod 2³², so only
-    /// a hint.
+    /// a hint. In a truncated file those four bytes are compressed data, so the hint is capped
+    /// at 40 times the input, well above the 6 to 11 times that XMLTV compresses by; growth
+    /// covers anything larger.
     ///
     /// Returns nil, or the problem if the data was truncated or corrupt. Everything decompressed
     /// before the problem is in `output`; the caller decides whether the problem is fatal.
     static func inflateAll(_ input: UnsafeBufferPointer<UInt8>, into output: inout ByteBuffer) throws(XMLTVError) -> XMLTVError.Kind? {
         if input.count >= 18 {
             let trailer = input.count - 4
-            let isize = Int(input[trailer]) | Int(input[trailer + 1]) << 8 | Int(input[trailer + 2]) << 16 | Int(input[trailer + 3]) << 24
-            _ = output.unusedCapacity(atLeast: max(isize, input.count) + 1)
+            let isize = UInt32(input[trailer]) | UInt32(input[trailer + 1]) << 8
+                | UInt32(input[trailer + 2]) << 16 | UInt32(input[trailer + 3]) << 24
+            let cap = input.count.multipliedReportingOverflow(by: 40)
+            let hint = min(Int(clamping: isize), cap.overflow ? .max : cap.partialValue)
+            _ = output.unusedCapacity(atLeast: max(hint, input.count) &+ 1)
         }
         let inflater = try GzipInflater()
         do throws(XMLTVError) {

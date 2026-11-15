@@ -15,11 +15,11 @@ import Foundation
 /// `Programme` is not `Identifiable`, and it will not become so. XMLTV gives a broadcast no
 /// identifier, and no combination of fields is unique in real feeds: merged feeds repeat
 /// records, sometimes identical in every field, and programmes in a clump share their channel
-/// and times. For SwiftUI, use ``XMLTVSchedule/Entry``, which is identified by its position in
-/// the parse, or an identifier your app assigns.
+/// and times. For SwiftUI, use ``XMLTVSchedule/Entry``, which is identified by its channel,
+/// start and position among programmes with the same start, or an identifier your app assigns.
 ///
 /// `Programme` is not `Codable` either, and will not become so. To cache a guide, keep the
-/// downloaded file and parse it again: that is several times faster than decoding the same
+/// downloaded file and parse it again: that is about 20 times faster than decoding the same
 /// records from JSON. The small values that apps embed in their own records, such as
 /// ``XMLTVTimestamp``, ``LocalizedText``, ``Icon`` and ``URLReference``, are `Codable`.
 ///
@@ -88,9 +88,10 @@ public struct Programme: Sendable, Hashable {
     /// The first episode title.
     public var episodeTitle: String? { episodeTitles.first?.value }
 
-    /// The scheduled running time, if both ends are known.
+    /// The scheduled running time, if both ends are known. Nil when `stop` is before `start`.
     public var duration: Duration? {
-        stop.map { .seconds($0.secondsSince1970 - start.secondsSince1970) }
+        guard let stop, stop.secondsSince1970 >= start.secondsSince1970 else { return nil }
+        return .seconds(stop.secondsSince1970 - start.secondsSince1970)
     }
 
     /// The start and stop as dates, or nil without a `stop`, or when `stop` is before `start`.

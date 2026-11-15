@@ -21,7 +21,8 @@ The first release.
 
 - `XMLTVSchedule` groups programmes by channel, sorts them, drops exact duplicates, infers
   missing stop times, and answers what is current, what is on air and what is next. Its entries
-  have IDs that survive a refresh of the feed, for SwiftUI.
+  have IDs that survive a refresh of the feed, for SwiftUI, as long as programmes that start
+  together keep their order.
 - `XMLTVDocument.channel(id:)`, `Programme.seasonEpisode`, `Programme.credits(_:)`,
   `Array<LocalizedText>.preferred(for:)`, and a `url` on `Icon`, `Programme.Image` and
   `URLReference`.
@@ -37,4 +38,7 @@ The first release.
 - `XMLTVError` is a `LocalizedError`, and `XMLTVDiagnostic.message` is a sentence for people.
 - Enums that are expected to grow are `@nonexhaustive`.
 
-Requires Swift 6.2.3 or later.
+### Platforms
+
+Requires Swift 6.2.3 or later. Apple platforms, and Linux, where the test suite passes;
+`URLSession.AsyncBytes` is Apple-only.

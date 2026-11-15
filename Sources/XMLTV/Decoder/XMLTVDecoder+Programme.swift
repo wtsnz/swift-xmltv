@@ -5,19 +5,21 @@ extension XMLTVDecoder {
         // Read every attribute before the first child token replaces them.
         var channelAttribute: RawAttribute?, startAttribute: RawAttribute?, stopAttribute: RawAttribute?
         var rareAttributes: [RawAttribute] = []
+        // A repeated attribute is not an error here, but only its first occurrence is used.
         for index in 0..<scanner.attributeCount {
             let attribute = scanner.attribute(at: index)
             let attributeName = attribute.name
-            if scanner.bytes(attributeName, equal: "start") { startAttribute = attribute }
-            else if scanner.bytes(attributeName, equal: "stop") { stopAttribute = attribute }
-            else if scanner.bytes(attributeName, equal: "channel") { channelAttribute = attribute }
+            if scanner.bytes(attributeName, equal: "start") { if startAttribute == nil { startAttribute = attribute } }
+            else if scanner.bytes(attributeName, equal: "stop") { if stopAttribute == nil { stopAttribute = attribute } }
+            else if scanner.bytes(attributeName, equal: "channel") { if channelAttribute == nil { channelAttribute = attribute } }
             else { rareAttributes.append(attribute) }
         }
 
         // Selection runs before validation, so a programme on a channel the caller excluded is
         // skipped at the cost of one attribute compare, and its problems are not reported. With
-        // a channel filter, a programme with no channel can never be selected.
-        guard let channelAttribute else {
+        // a channel filter, a programme with no channel can never be selected. An empty channel
+        // can never match a declared channel, so it counts as missing.
+        guard let channelAttribute, !channelAttribute.value.isEmpty else {
             if channelIDs == nil {
                 try diagnostics.report(.missingAttribute(element: "programme", attribute: "channel"), .programmeDropped, at: elementStart)
             }
@@ -43,6 +45,9 @@ extension XMLTVDecoder {
         }
         let stop = try stopAttribute.flatMap { attribute throws(XMLTVError) in try timestamp(attribute) }
         guard isInTimeWindow(start: start, stop: stop) else {
+            // Outside the window: like a programme on an excluded channel, it reports nothing,
+            // including any repair its times needed.
+            diagnostics.discardPending()
             try skipContent(of: name, isEmpty: isEmpty)
             return nil
         }
@@ -68,7 +73,8 @@ extension XMLTVDecoder {
         _ attributes: [RawAttribute], into details: inout Programme.Details.Fields
     ) throws(XMLTVError) -> Bool {
         var found = false
-        for attribute in attributes {
+        // In reverse, so that the first occurrence of a repeated attribute is the one kept.
+        for attribute in attributes.reversed() {
             let name = attribute.name
             if scanner.bytes(name, equal: "pdc-start") { details.pdcStart = try timestamp(attribute); found = true }
             else if scanner.bytes(name, equal: "vps-start") { details.vpsStart = try timestamp(attribute); found = true }
@@ -115,29 +121,37 @@ extension XMLTVDecoder {
                         programme.starRatings.append(Programme.StarRating(rating.value, system: rating.system, icons: rating.icons))
                     }
                 case .previouslyShown:
-                    programme.previouslyShown = try previouslyShown(child, isEmpty: isEmpty)
+                    let shown = try previouslyShown(child, isEmpty: isEmpty)
+                    if programme.previouslyShown == nil { programme.previouslyShown = shown }
 
                 // Less common fields, stored in `details`.
                 case .keyword:
                     details.keywords.append(try localizedText(child, isEmpty: isEmpty)); hasDetails = true
+                // Single-valued children: the first one is kept, as for `<date>` and attributes.
                 case .language:
-                    details.language = try localizedText(child, isEmpty: isEmpty); hasDetails = true
+                    let language = try localizedText(child, isEmpty: isEmpty)
+                    if details.language == nil { details.language = language; hasDetails = true }
                 case .origLanguage:
-                    details.originalLanguage = try localizedText(child, isEmpty: isEmpty); hasDetails = true
+                    let language = try localizedText(child, isEmpty: isEmpty)
+                    if details.originalLanguage == nil { details.originalLanguage = language; hasDetails = true }
                 case .length:
-                    if let length = try length(child, isEmpty: isEmpty) { details.length = length; hasDetails = true }
+                    if let length = try length(child, isEmpty: isEmpty), details.length == nil { details.length = length; hasDetails = true }
                 case .url:
                     details.urls.append(try link(child, isEmpty: isEmpty)); hasDetails = true
                 case .country:
                     details.countries.append(try localizedText(child, isEmpty: isEmpty)); hasDetails = true
                 case .video:
-                    details.video = try video(child, isEmpty: isEmpty); hasDetails = true
+                    let video = try video(child, isEmpty: isEmpty)
+                    if details.video == nil { details.video = video; hasDetails = true }
                 case .audio:
-                    details.audio = try audio(child, isEmpty: isEmpty); hasDetails = true
+                    let audio = try audio(child, isEmpty: isEmpty)
+                    if details.audio == nil { details.audio = audio; hasDetails = true }
                 case .premiere:
-                    details.premiere = try localizedText(child, isEmpty: isEmpty); hasDetails = true
+                    let premiere = try localizedText(child, isEmpty: isEmpty)
+                    if details.premiere == nil { details.premiere = premiere; hasDetails = true }
                 case .lastChance:
-                    details.lastChance = try localizedText(child, isEmpty: isEmpty); hasDetails = true
+                    let lastChance = try localizedText(child, isEmpty: isEmpty)
+                    if details.lastChance == nil { details.lastChance = lastChance; hasDetails = true }
                 case .new:
                     try skipContent(of: child, isEmpty: isEmpty)
                     details.isNew = true; hasDetails = true
@@ -192,8 +206,17 @@ extension XMLTVDecoder {
         if role == .actor {
             if let character = scanner.attribute("role") { credit.character = try string(character) }
             if let guest = scanner.attribute("guest") {
-                credit.isGuest = try text.withAttributeBytes(guest, in: scanner, diagnostics: &diagnostics) {
-                    $0.elementsEqual("yes".utf8)
+                if !guest.needsDecoding && scanner.bytes(guest.value, equal: "yes") {
+                    credit.isGuest = true
+                } else if guest.needsDecoding || !scanner.bytes(guest.value, equal: "no") {
+                    // The rare path: decode and validate the text, then compare.
+                    let value = try string(guest)
+                    switch value {
+                    case "yes": credit.isGuest = true
+                    case "no": break
+                    default:
+                        try diagnostics.report(.invalidValue(element: "actor", value: value), .assumedDefault, at: guest.value.start)
+                    }
                 }
             }
         }
@@ -262,8 +285,10 @@ extension XMLTVDecoder {
         let system = try scanner.attribute("system").map { attribute throws(XMLTVError) in try string(attribute) }
         var value: String?
         var icons: [Icon] = []
-        // Some feeds write `<rating>12</rating>` with no `<value>`. Lenient mode recovers that text.
-        var directText: (range: ByteRange, needsDecoding: Bool)?
+        // Some feeds write `<rating>12</rating>` with no `<value>`. Lenient mode recovers that
+        // text: every run of it and every CDATA section, decoded together at the end, as for a
+        // mixed-content credit.
+        var directText: [TextPiece] = []
         if !isEmpty {
             loop: while true {
                 switch try scanner.next() {
@@ -277,21 +302,30 @@ extension XMLTVDecoder {
                     try expectEndTag(closing, matching: name)
                     break loop
                 case .text(let range, let needsDecoding):
-                    if directText == nil && !isWhitespace(range) { directText = (range, needsDecoding) }
-                case .cdata:
-                    continue
+                    // Whitespace before any real text would be trimmed anyway. Skipping it keeps
+                    // the usual `<rating>` with indented children from allocating.
+                    if value == nil && (!directText.isEmpty || !isWhitespace(range)) {
+                        directText.append(TextPiece(range: range, mode: .text, needsDecoding: needsDecoding))
+                    }
+                case .cdata(let range):
+                    if value == nil { directText.append(TextPiece(range: range, mode: .cdata, needsDecoding: false)) }
                 case .endOfInput:
                     throw scanner.truncated()
                 }
             }
         }
         if value == nil {
-            guard let directText else {
-                try diagnostics.report(.missingElement(element: scanner.string(name), child: "value"), .valueDropped, at: start)
+            let elementName = scanner.string(name)
+            guard directText.contains(where: { !isWhitespace($0.range) }) else {
+                try diagnostics.report(.missingElement(element: elementName, child: "value"), .valueDropped, at: start)
                 return nil
             }
-            try diagnostics.report(.missingElement(element: scanner.string(name), child: "value"), .repaired, at: start)
-            value = try text.text(directText.range, needsDecoding: directText.needsDecoding, in: scanner, diagnostics: &diagnostics)
+            try diagnostics.report(.missingElement(element: elementName, child: "value"), .repaired, at: start)
+            text.beginPieces()
+            for piece in directText {
+                try text.appendPiece(piece.range, mode: piece.mode, needsDecoding: piece.needsDecoding, in: scanner, diagnostics: &diagnostics)
+            }
+            value = try text.finishPieces(at: directText[0].range.start, diagnostics: &diagnostics)
         }
         return Programme.Rating(value!, system: system, icons: icons)
     }
@@ -316,7 +350,14 @@ extension XMLTVDecoder {
         let value = try textContent(of: name, isEmpty: isEmpty)
         // Fractional values such as `2.5` hours occur in real feeds; the DTD does not forbid them.
         // Anything beyond a century is treated as invalid, which also keeps `Duration` in range.
-        guard let unitSeconds, let amount = Double(value), amount >= 0, amount * unitSeconds <= Self.maximumLength else {
+        // Decimal digits with at most one point: `Double(_:)` alone would also accept `0x10`,
+        // `1e2` and `inf`.
+        var points = 0
+        let isDecimal = !value.isEmpty && value.utf8.allSatisfy { byte in
+            if byte == UInt8(ascii: ".") { points += 1; return points <= 1 }
+            return byte >= UInt8(ascii: "0") && byte <= UInt8(ascii: "9")
+        }
+        guard let unitSeconds, isDecimal, let amount = Double(value), amount >= 0, amount * unitSeconds <= Self.maximumLength else {
             let detail = units.map { "\(value) \($0)" } ?? "missing units"
             try diagnostics.report(.invalidValue(element: "length", value: detail), .valueDropped, at: start)
             return nil
@@ -328,8 +369,8 @@ extension XMLTVDecoder {
         var video = Programme.Video()
         try forEachChild(of: name, isEmpty: isEmpty) { decoder, tag, child, childIsEmpty throws(XMLTVError) in
             switch tag {
-            case .present: video.isPresent = Self.yesNo(try decoder.textContent(of: child, isEmpty: childIsEmpty))
-            case .colour: video.isColour = Self.yesNo(try decoder.textContent(of: child, isEmpty: childIsEmpty))
+            case .present: video.isPresent = try decoder.yesNo(child, isEmpty: childIsEmpty)
+            case .colour: video.isColour = try decoder.yesNo(child, isEmpty: childIsEmpty)
             case .aspect: video.aspect = try decoder.textContent(of: child, isEmpty: childIsEmpty)
             case .quality: video.quality = try decoder.textContent(of: child, isEmpty: childIsEmpty)
             default: try decoder.skipContent(of: child, isEmpty: childIsEmpty)
@@ -342,7 +383,7 @@ extension XMLTVDecoder {
         var audio = Programme.Audio()
         try forEachChild(of: name, isEmpty: isEmpty) { decoder, tag, child, childIsEmpty throws(XMLTVError) in
             switch tag {
-            case .present: audio.isPresent = Self.yesNo(try decoder.textContent(of: child, isEmpty: childIsEmpty))
+            case .present: audio.isPresent = try decoder.yesNo(child, isEmpty: childIsEmpty)
             case .stereo: audio.stereo = try decoder.textContent(of: child, isEmpty: childIsEmpty)
             default: try decoder.skipContent(of: child, isEmpty: childIsEmpty)
             }
@@ -425,11 +466,16 @@ extension XMLTVDecoder {
 
     private static let maximumLength = 100 * 365 * 86_400.0
 
-    private static func yesNo(_ text: String) -> Bool? {
-        switch text {
-        case "yes": true
-        case "no": false
-        default: nil
+    /// A `yes` or `no` element such as `<present>`. Anything else is reported and dropped.
+    private mutating func yesNo(_ name: ByteRange, isEmpty: Bool) throws(XMLTVError) -> Bool? {
+        let start = scanner.tokenStart
+        let value = try textContent(of: name, isEmpty: isEmpty)
+        switch value {
+        case "yes": return true
+        case "no": return false
+        default:
+            try diagnostics.report(.invalidValue(element: scanner.string(name), value: value), .valueDropped, at: start)
+            return nil
         }
     }
 }

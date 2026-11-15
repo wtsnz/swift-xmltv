@@ -1,9 +1,3 @@
-#if canImport(Darwin)
-import Darwin
-#elseif canImport(Glibc)
-import Glibc
-#endif
-
 /// A growable, uniquely owned byte buffer. It holds decompressed or transcoded documents and the
 /// streaming reader's window.
 ///
