@@ -49,7 +49,7 @@ enum DocumentInput {
             return try withUTF8(bytes, options: options, body)
         }
 
-        let contents = try readAll(descriptor, sizeHint: size, path: url.path)
+        let contents = try readAll(descriptor, sizeHint: size, path: url.path, threads: options.parallelism.threadCount)
         return try withUTF8(contents.bytes, options: options, body)
     }
 
@@ -117,12 +117,12 @@ enum DocumentInput {
     /// Reads the whole file into one buffer. Large files are read with several `pread`s at
     /// once: the cost is mostly page faults on the fresh buffer, and those scale with threads.
     /// The serial loop afterwards picks up anything appended since `fstat`.
-    static func readAll(_ descriptor: Int32, sizeHint: Int, path: String) throws(XMLTVError) -> ByteBuffer {
+    static func readAll(_ descriptor: Int32, sizeHint: Int, path: String, threads: Int) throws(XMLTVError) -> ByteBuffer {
         var buffer = ByteBuffer(capacity: sizeHint + 1)
-        if sizeHint >= parallelReadThreshold {
+        let sliceCount = readSliceCount(size: sizeHint, threads: threads)
+        if sliceCount > 1 {
             let space = buffer.unusedCapacity(atLeast: sizeHint)
             let target = UncheckedSendable(space.baseAddress!)
-            let sliceCount = 8
             let sliceSize = (sizeHint + sliceCount - 1) / sliceCount
             let failures = UncheckedSendable(UnsafeMutableBufferPointer<Int32>.allocate(capacity: sliceCount))
             failures.value.initialize(repeating: 0)
@@ -161,4 +161,10 @@ enum DocumentInput {
     }
 
     static let parallelReadThreshold = 64 << 20
+
+    /// How many slices of a file to read at once: up to eight for large files, within the
+    /// caller's thread limit.
+    static func readSliceCount(size: Int, threads: Int) -> Int {
+        size >= parallelReadThreshold ? min(8, threads) : 1
+    }
 }

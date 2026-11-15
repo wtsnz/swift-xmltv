@@ -61,8 +61,8 @@ public struct XMLTVItems<Chunks: AsyncSequence>: AsyncSequence where Chunks.Elem
     /// An iterator is a single cursor: copies of it share their position, so advancing one
     /// advances all of them. Advance it from one task at a time: two tasks interleaving calls,
     /// even on one actor, stop the program with a precondition failure. To iterate from an
-    /// actor, keep the iterator in a local variable of an actor method, and call
-    /// ``next(isolation:)``.
+    /// actor, keep the iterator in a local variable of an actor method. Both `next()` methods
+    /// decode on the caller's actor, and read the chunk source there.
     public struct AsyncIterator: AsyncIteratorProtocol {
         let state: State
 
@@ -111,8 +111,9 @@ public struct XMLTVItems<Chunks: AsyncSequence>: AsyncSequence where Chunks.Elem
             }
         }
 
-        public mutating func next() async throws -> XMLTVItem? {
-            try await next(isolation: nil)
+        /// The next channel or programme, decoded on the caller's actor, as `for try await` does.
+        public nonisolated(nonsending) mutating func next() async throws -> XMLTVItem? {
+            try await next(isolation: #isolation)
         }
     }
 

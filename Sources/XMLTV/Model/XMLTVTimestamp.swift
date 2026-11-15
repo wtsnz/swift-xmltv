@@ -19,8 +19,14 @@ public struct XMLTVTimestamp: Sendable, Hashable, Comparable, Codable {
     /// of the period: `2024` becomes 2024-01-01T00:00:00 in the given zone.
     public var secondsSince1970: Int64
     /// The UTC offset written in the source, in seconds east of Greenwich. Zero when the source
-    /// wrote no zone, which XMLTV defines as UTC.
-    public var utcOffsetSeconds: Int32
+    /// wrote no zone, which XMLTV defines as UTC. Values beyond the range of `Int32`, about 68
+    /// years, are clamped to it.
+    public var utcOffsetSeconds: Int {
+        get { Int(offset) }
+        set { offset = Int32(clamping: newValue) }
+    }
+    /// Stored in 32 bits, so that a timestamp is 16 bytes.
+    private var offset: Int32
     /// The smallest unit the source specified.
     public var precision: Precision
     /// False when the source named a zone that is not in ``XMLTVOptions/namedTimeZones``. The
@@ -45,9 +51,13 @@ public struct XMLTVTimestamp: Sendable, Hashable, Comparable, Codable {
         public static func < (lhs: Self, rhs: Self) -> Bool { lhs.order < rhs.order }
     }
 
-    public init(secondsSince1970: Int64, utcOffsetSeconds: Int32 = 0, precision: Precision = .second, isTimeZoneKnown: Bool = true) {
+    public init(secondsSince1970: Int64, utcOffsetSeconds: Int = 0, precision: Precision = .second, isTimeZoneKnown: Bool = true) {
+        self.init(secondsSince1970: secondsSince1970, offset: Int32(clamping: utcOffsetSeconds), precision: precision, isTimeZoneKnown: isTimeZoneKnown)
+    }
+
+    init(secondsSince1970: Int64, offset: Int32, precision: Precision = .second, isTimeZoneKnown: Bool = true) {
         self.secondsSince1970 = secondsSince1970
-        self.utcOffsetSeconds = utcOffsetSeconds
+        self.offset = offset
         self.precision = precision
         self.isTimeZoneKnown = isTimeZoneKnown
     }
@@ -55,7 +65,7 @@ public struct XMLTVTimestamp: Sendable, Hashable, Comparable, Codable {
     /// The timestamp for a date, to the second, as written with the given offset. Fractions of
     /// a second are dropped, rounding towards the past, as XMLTV cannot express them. Dates
     /// beyond the range of `Int64` seconds, such as `distantFuture` scaled up, are clamped.
-    public init(_ date: Date, utcOffsetSeconds: Int32 = 0) {
+    public init(_ date: Date, utcOffsetSeconds: Int = 0) {
         self.init(secondsSince1970: Self.seconds(date, rounding: .down), utcOffsetSeconds: utcOffsetSeconds)
     }
 
@@ -116,7 +126,7 @@ public struct XMLTVTimestamp: Sendable, Hashable, Comparable, Codable {
     public init(
         _ text: some StringProtocol,
         policy: XMLTVOptions.Policy,
-        namedTimeZones: [String: Int32] = XMLTVOptions.standardNamedTimeZones
+        namedTimeZones: [String: Int] = XMLTVOptions.standardNamedTimeZones
     ) throws(XMLTVError) {
         var utf8 = String(text)
         let outcome = utf8.withUTF8 { TimestampParser.parse($0, namedZones: namedTimeZones) }
@@ -150,7 +160,7 @@ public struct XMLTVTimestamp: Sendable, Hashable, Comparable, Codable {
     /// The offset is only as good as the feed. Many feeds write every time in UTC, and then this
     /// is UTC, not the broadcaster's zone.
     public var timeZone: TimeZone? {
-        isTimeZoneKnown ? TimeZone(secondsFromGMT: Int(utcOffsetSeconds)) : nil
+        isTimeZoneKnown ? TimeZone(secondsFromGMT: utcOffsetSeconds) : nil
     }
 
     /// Whether the two timestamps are the same instant, whatever offsets they were written with.
@@ -162,7 +172,7 @@ public struct XMLTVTimestamp: Sendable, Hashable, Comparable, Codable {
     /// with `==`.
     public static func < (lhs: Self, rhs: Self) -> Bool {
         if lhs.secondsSince1970 != rhs.secondsSince1970 { return lhs.secondsSince1970 < rhs.secondsSince1970 }
-        if lhs.utcOffsetSeconds != rhs.utcOffsetSeconds { return lhs.utcOffsetSeconds < rhs.utcOffsetSeconds }
+        if lhs.offset != rhs.offset { return lhs.offset < rhs.offset }
         if lhs.precision != rhs.precision { return lhs.precision < rhs.precision }
         return !lhs.isTimeZoneKnown && rhs.isTimeZoneKnown
     }
@@ -179,7 +189,7 @@ public struct XMLTVTimestamp: Sendable, Hashable, Comparable, Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.init(
             secondsSince1970: try container.decode(Int64.self, forKey: .secondsSince1970),
-            utcOffsetSeconds: try container.decodeIfPresent(Int32.self, forKey: .utcOffsetSeconds) ?? 0,
+            utcOffsetSeconds: try container.decodeIfPresent(Int.self, forKey: .utcOffsetSeconds) ?? 0,
             precision: try container.decodeIfPresent(Precision.self, forKey: .precision) ?? .second,
             isTimeZoneKnown: try container.decodeIfPresent(Bool.self, forKey: .isTimeZoneKnown) ?? true)
     }
@@ -205,18 +215,22 @@ extension XMLTVTimestamp: CustomStringConvertible {
         // Years before 1 are written as ISO 8601 writes them: 0 is 1 BC, and -1 is `-0001`.
         let digits = String(year.magnitude)
         var text = (year < 0 ? "-" : "") + String(repeating: "0", count: max(0, 4 - digits.count)) + digits
-        guard precision > .year else { return text }
-        text += "-" + two(month)
-        guard precision > .month else { return text }
-        text += "-" + two(day)
-        guard precision > .day else { return text }
+        if precision > .year { text += "-" + two(month) }
+        if precision > .month { text += "-" + two(day) }
+        guard precision > .day else {
+            // A date has no time to put a zone on, but an unresolved name still changes it.
+            return isTimeZoneKnown ? text : text + " (unresolved zone name, read as UTC)"
+        }
         text += "T" + two(hour)
         if precision >= .minute { text += ":" + two(minute) }
         if precision >= .second { text += ":" + two(second) }
 
         if !isTimeZoneKnown { return text + "Z (unresolved zone name, read as UTC)" }
-        if utcOffsetSeconds == 0 { return text + "Z" }
-        let magnitude = abs(Int(utcOffsetSeconds))
-        return text + (utcOffsetSeconds < 0 ? "-" : "+") + two(magnitude / 3600) + ":" + two(magnitude / 60 % 60)
+        if offset == 0 { return text + "Z" }
+        // An offset with a seconds part, which a named zone can have, keeps it, so that the text
+        // names the same instant.
+        let magnitude = abs(utcOffsetSeconds)
+        text += (offset < 0 ? "-" : "+") + two(magnitude / 3600) + ":" + two(magnitude / 60 % 60)
+        return magnitude % 60 == 0 ? text : text + ":" + two(magnitude % 60)
     }
 }

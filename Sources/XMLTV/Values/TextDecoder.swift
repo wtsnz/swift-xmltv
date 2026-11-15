@@ -21,6 +21,13 @@ struct TextDecoder {
     }
     /// Reused output buffer for decoded or multi-piece text.
     private var scratch: [UInt8] = []
+    /// Whether every piece gathered since ``beginPieces()`` was free of problems.
+    private var piecesAreClean = true
+
+    // Problems in text are reported where they are in the source. Text that is decoded first is
+    // checked on its source bytes: decoding neither adds a problem, since a reference to a
+    // forbidden character is refused, nor removes one, since every other byte passes through,
+    // so nothing is missed and the decoded string is not checked again.
 
     // MARK: Single ranges
 
@@ -35,10 +42,11 @@ struct TextDecoder {
             return try string(scanner.pointer(to: trimmed), at: trimmed.start, diagnostics: &diagnostics)
         }
         // References can decode to whitespace (`&#13;` at the end of a description is common), so
-        // the decoded text is trimmed again, as the upstream XMLTV tools do.
-        beginPieces()
+        // the decoded text is trimmed again, as the upstream XMLTV tools do. One range needs no
+        // repair of its own: making the string replaces invalid UTF-8.
+        scratch.removeAll(keepingCapacity: true)
         try decode(trimmed, mode: .text, in: scanner, diagnostics: &diagnostics)
-        return try finishPieces(at: trimmed.start, diagnostics: &diagnostics)
+        return try decoded(trimmedScratch(), from: scanner.pointer(to: trimmed), at: trimmed.start, diagnostics: &diagnostics)
     }
 
     /// The string for an attribute value. Values are not trimmed: XML keeps their whitespace.
@@ -52,7 +60,7 @@ struct TextDecoder {
         }
         scratch.removeAll(keepingCapacity: true)
         try decode(range, mode: .attribute, in: scanner, diagnostics: &diagnostics)
-        return try scratchString(at: range.start, diagnostics: &diagnostics)
+        return try decoded(0..<scratch.count, from: scanner.pointer(to: range), at: range.start, diagnostics: &diagnostics)
     }
 
     /// Decodes an attribute value into the scratch buffer and passes the bytes to `body` without
@@ -74,12 +82,11 @@ struct TextDecoder {
     /// credits, is gathered piece by piece and trimmed once at the end.
     mutating func beginPieces() {
         scratch.removeAll(keepingCapacity: true)
+        piecesAreClean = true
     }
 
-    /// Each piece is checked for invalid UTF-8 on its own, and repaired there: bytes on either
-    /// side of a comment or a child element must not join into one character. Forbidden
-    /// characters do not depend on their neighbours, so the whole text is checked for them at
-    /// the end.
+    /// Each piece is checked on its own, and invalid UTF-8 in it is repaired there: bytes on
+    /// either side of a comment or a child element must not join into one character.
     mutating func appendPiece(
         _ range: ByteRange, mode: Mode, needsDecoding: Bool, in scanner: XMLScanner, diagnostics: inout Diagnostics
     ) throws(XMLTVError) {
@@ -89,38 +96,64 @@ struct TextDecoder {
         } else {
             scratch.append(contentsOf: scanner.pointer(to: range))
         }
+        guard try !Self.check(scanner.pointer(to: range), at: range.start, diagnostics: &diagnostics) else { return }
+        piecesAreClean = false
         let repaired: String? = scratch.withUnsafeBufferPointer { buffer in
             let piece = UnsafeBufferPointer(rebasing: buffer[pieceStart...])
-            guard TextValidation.firstProblem(in: piece) != nil else { return nil }
             let decoded = String(decoding: piece, as: UTF8.self)
             return decoded.utf8.elementsEqual(piece) ? nil : decoded
         }
-        if let repaired {
-            try diagnostics.report(.invalidUTF8, .repaired, at: range.start)
-            scratch.replaceSubrange(pieceStart..., with: repaired.utf8)
-        }
+        if let repaired { scratch.replaceSubrange(pieceStart..., with: repaired.utf8) }
     }
 
-    mutating func finishPieces(at offset: Int, diagnostics: inout Diagnostics) throws(XMLTVError) -> String {
+    /// The gathered text, trimmed. Its problems were reported as the pieces were added.
+    mutating func finishPieces() -> String {
+        unchecked(trimmedScratch(), isClean: piecesAreClean)
+    }
+
+    /// The scratch buffer without leading and trailing XML whitespace.
+    private func trimmedScratch() -> Range<Int> {
         var start = 0, end = scratch.count
         while start < end && scratch[start].isXMLWhitespace { start &+= 1 }
         while end > start && scratch[end &- 1].isXMLWhitespace { end &-= 1 }
-        // Read through a local reference so the buffer access does not overlap the mutating
-        // `string(_:)` call, which may insert into the interner.
-        let bytes = scratch
-        return try bytes.withUnsafeBufferPointer { buffer throws(XMLTVError) in
-            try string(UnsafeBufferPointer(rebasing: buffer[start..<end]), at: offset, diagnostics: &diagnostics)
-        }
+        return start..<end
     }
 
     // MARK: String creation
 
-    private mutating func scratchString(at offset: Int, diagnostics: inout Diagnostics) throws(XMLTVError) -> String {
+    /// A string from part of the scratch buffer, decoded from `source`, which starts at `offset`.
+    /// The source is checked only when the string is not in the table yet: only clean strings
+    /// are cached, and decoding neither adds nor removes a problem, so a cached string's source
+    /// was clean too. Repeated text with references then costs no validation, as plain text
+    /// does not.
+    private mutating func decoded(
+        _ range: Range<Int>, from source: UnsafeBufferPointer<UInt8>, at offset: Int, diagnostics: inout Diagnostics
+    ) throws(XMLTVError) -> String {
         // Read through a local reference so the buffer access does not overlap the mutating
-        // `string(_:)` call, which may insert into the interner.
+        // interner insert.
         let bytes = scratch
         return try bytes.withUnsafeBufferPointer { buffer throws(XMLTVError) in
-            try string(buffer, at: offset, diagnostics: &diagnostics)
+            let text = UnsafeBufferPointer(rebasing: buffer[range])
+            guard Interner.isEligible(text.count) else {
+                _ = try Self.check(source, at: offset, diagnostics: &diagnostics)
+                return String(decoding: text, as: UTF8.self)
+            }
+            return try interner.string(for: text) { text throws(XMLTVError) in
+                let isClean = try Self.check(source, at: offset, diagnostics: &diagnostics)
+                return (String(decoding: text, as: UTF8.self), isClean)
+            }
+        }
+    }
+
+    /// A string from part of the scratch buffer, which has already been checked.
+    private mutating func unchecked(_ range: Range<Int>, isClean: Bool) -> String {
+        // Read through a local reference so the buffer access does not overlap the mutating
+        // interner insert.
+        let bytes = scratch
+        return bytes.withUnsafeBufferPointer { buffer in
+            let text = UnsafeBufferPointer(rebasing: buffer[range])
+            guard Interner.isEligible(text.count) else { return String(decoding: text, as: UTF8.self) }
+            return interner.string(for: text) { text in (String(decoding: text, as: UTF8.self), isClean) }
         }
     }
 
@@ -138,19 +171,25 @@ struct TextDecoder {
 
     /// Checks the text once, then creates the string. Invalid UTF-8 is repaired with U+FFFD, and
     /// characters XML forbids are kept. Either is a diagnostic in lenient mode and an error in
-    /// strict mode. `isClean` is false when a diagnostic was reported.
+    /// strict mode, reported where it is. `isCacheable` is false when a diagnostic was reported.
     @inline(__always)
     static func validatedString(
         _ bytes: UnsafeBufferPointer<UInt8>, at offset: Int, diagnostics: inout Diagnostics
     ) throws(XMLTVError) -> (value: String, isCacheable: Bool) {
-        let problem = TextValidation.firstProblem(in: bytes)
-        if let problem {
-            // Invalid UTF-8 is replaced as the string is made. A forbidden character is kept.
-            for kind in TextValidation.problems(in: bytes, first: problem) {
-                try diagnostics.report(kind, kind == .invalidUTF8 ? .repaired : .keptAsWritten, at: offset)
-            }
+        let isClean = try check(bytes, at: offset, diagnostics: &diagnostics)
+        return (String(decoding: bytes, as: UTF8.self), isClean)
+    }
+
+    /// Reports each kind of problem in source text that starts at `offset`, at the problem's own
+    /// position. Returns whether the text was clean.
+    @inline(__always)
+    static func check(_ bytes: UnsafeBufferPointer<UInt8>, at offset: Int, diagnostics: inout Diagnostics) throws(XMLTVError) -> Bool {
+        guard TextValidation.firstProblem(in: bytes) != nil else { return true }
+        // Invalid UTF-8 is replaced as the string is made. A forbidden character is kept.
+        for (kind, index) in TextValidation.problems(in: bytes) {
+            try diagnostics.report(kind, kind == .invalidUTF8 ? .repaired : .keptAsWritten, at: offset &+ index)
         }
-        return (String(decoding: bytes, as: UTF8.self), problem == nil)
+        return false
     }
 
     // MARK: Decoding

@@ -21,7 +21,8 @@ struct APITests {
         let diagnostic = XMLTVDiagnostic(kind: .invalidTimestamp("2024x"), recovery: .programmeDropped, line: 12)
         #expect(diagnostic.message == "Line 12: The time “2024x” is not valid. The programme was skipped.")
         #expect(XMLTVError.Kind.invalidTimestamp("x").code == .invalidTimestamp)
-        #expect(XMLTVError.Code.allCases.count == 18)
+        #expect(XMLTVError.Code.allCases.count == 19)
+        #expect(XMLTVError(.recordTooLarge(maximumSize: 16 << 20)).localizedDescription == "The guide has a record larger than the 16 MiB that a streaming read allows.")
     }
 
     @Test func nonXMLAndRemoteURLsAreNamed() throws {
@@ -95,6 +96,9 @@ struct APITests {
         var changed = second
         changed.programmes[0].titles[0].value += "!"
         #expect(first != changed)
+        // The report describes the transport, not the guide.
+        let gzipped = try XMLTVDocument(data: try Fixtures.data("upstream_test.xml.gz"))
+        #expect(gzipped.report != first.report && gzipped == first && gzipped.hashValue == first.hashValue)
     }
 
     @Test func codableShapesAreStable() throws {
@@ -118,6 +122,13 @@ struct APITests {
                        as: #"{"channelID":"c","ordinal":1,"secondsSince1970":5}"#)
         try roundTrips(XMLTVError.Code.invalidUTF8, as: #""invalidUTF8""#)
         try roundTrips(XMLTVDiagnostic.Recovery.programmeDropped, as: #""programmeDropped""#)
+        try roundTrips(Programme.EpisodeNumber("1.4.", system: "xmltv_ns"), as: #"{"system":"xmltv_ns","value":"1.4."}"#)
+        try roundTrips(Programme.SeasonEpisode(season: 2, episode: 5), as: #"{"episode":5,"season":2}"#)
+        try roundTrips(Programme.Rating("PG", system: "MPAA"), as: #"{"icons":[],"system":"MPAA","value":"PG"}"#)
+        try roundTrips(Programme.StarRating("3/5"), as: #"{"icons":[],"value":"3\/5"}"#)
+        try roundTrips(Programme.Clump(index: 1, count: 2), as: #"{"count":2,"index":1}"#)
+        try roundTrips(Programme.Credit.Role.presenter, as: #""presenter""#)
+        try roundTrips(XMLTVEncoding.windows1252, as: #""windows-1252""#)
     }
 }
 
@@ -149,6 +160,30 @@ struct ProbeBytes: AsyncSequence, Sendable {
     }
 
     func makeAsyncIterator() -> AsyncIterator { AsyncIterator(data: data, counter: counter) }
+}
+
+/// Chunks that record whether they were read on the main thread.
+struct ProbeChunks: AsyncSequence, Sendable {
+    let chunks: [Data]
+    let mainThreadCalls = ProbeBytes.Counter()
+
+    struct AsyncIterator: AsyncIteratorProtocol {
+        let chunks: [Data]
+        let counter: ProbeBytes.Counter
+        var index = 0
+
+        mutating func next() async -> Data? { advance() }
+        mutating func next(isolation actor: isolated (any Actor)?) async -> Data? { advance() }
+
+        private mutating func advance() -> Data? {
+            counter.calls.add(1, ordering: .relaxed)
+            if Thread.isMainThread { counter.mainThreadCalls.add(1, ordering: .relaxed) }
+            defer { index += 1 }
+            return index < chunks.count ? chunks[index] : nil
+        }
+    }
+
+    func makeAsyncIterator() -> AsyncIterator { AsyncIterator(chunks: chunks, counter: mainThreadCalls) }
 }
 
 /// Chunks that can be iterated more than once, each iteration from the start.

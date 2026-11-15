@@ -28,8 +28,9 @@ import Foundation
 ///
 /// Overlapping programmes and the members of a clump are all kept, so ``onAir(_:at:)`` returns
 /// an array. ``current(_:at:)`` picks the one that started most recently, which is what a
-/// "now" line should show. Gaps are left as gaps. A programme whose `stop` is not after its
-/// `start` is kept in the list, and returned by ``next(_:after:)``, but is never on air.
+/// "now" line should show, and of several that started together, the first in the feed, the
+/// same one ``next(_:after:)`` announced. Gaps are left as gaps. A programme whose `stop` is not
+/// after its `start` is kept in the list, but is never on air and never next.
 ///
 /// A ``XMLTVOptions/timeWindow`` and inferred stop times do not mix. A window drops the
 /// programme that starts after it, which is the one that says when the last programme inside
@@ -281,7 +282,8 @@ public struct XMLTVSchedule: Sendable {
     }
 
     /// The programme to show as "now" on the channel: of those on air at `date`, the one that
-    /// started most recently. Nil in a gap.
+    /// started most recently, and of several that started together, such as a clump, the first
+    /// in the feed. That is the entry ``next(_:after:)`` returned before it started. Nil in a gap.
     ///
     /// When programmes overlap, the later one has usually replaced the earlier, as when a feed
     /// does not shorten a programme that a schedule change cut short.
@@ -291,7 +293,16 @@ public struct XMLTVSchedule: Sendable {
         // Backwards from the last entry that has started: the first on air is the latest start.
         var index = Self.firstStart(after: seconds, in: timeline.entries) - 1
         while index >= 0 && timeline.latestEnd[index] > seconds {
-            if timeline.entries[index].isOnAir(at: date) { return timeline.entries[index] }
+            if timeline.entries[index].isOnAir(at: date) {
+                // The first of the entries on air that share this start.
+                let start = timeline.entries[index].start.secondsSince1970
+                var first = index, k = index - 1
+                while k >= 0 && timeline.entries[k].start.secondsSince1970 == start {
+                    if timeline.entries[k].isOnAir(at: date) { first = k }
+                    k -= 1
+                }
+                return timeline.entries[first]
+            }
             index -= 1
         }
         return nil
@@ -313,10 +324,16 @@ public struct XMLTVSchedule: Sendable {
 
     /// The channel's first programme that starts after `date`. When several start at that
     /// instant, as in a clump, this is the first of them in document order; the subscript has
-    /// the rest.
+    /// the rest. Programmes that end as they start are skipped, since they are never on air.
     public func next(_ channelID: String, after date: Date) -> Entry? {
         guard let timeline = timelines[channelID] else { return nil }
-        let index = Self.firstStart(after: Entry.seconds(date), in: timeline.entries)
+        var index = Self.firstStart(after: Entry.seconds(date), in: timeline.entries)
+        // Skip entries that end as they start: they are never on air, so "next" would announce
+        // something that never shows as "now".
+        while index < timeline.entries.count, let end = timeline.entries[index].end,
+              end.secondsSince1970 <= timeline.entries[index].start.secondsSince1970 {
+            index += 1
+        }
         return index < timeline.entries.count ? timeline.entries[index] : nil
     }
 

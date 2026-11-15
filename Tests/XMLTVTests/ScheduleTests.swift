@@ -55,6 +55,25 @@ struct ScheduleTests {
         #expect(schedule.onAir("c", at: date(23)).isEmpty)
     }
 
+    /// What "next" announces is what "now" shows once it starts: for programmes that start
+    /// together, both pick the first in the feed, and neither picks one that is never on air.
+    @Test func currentAndNextAgreeOnProgrammesThatStartTogether() {
+        var news = Programme(channelID: "c", start: time(10), title: "News")
+        news.clump = .init(index: 0, count: 2)
+        var weather = Programme(channelID: "c", start: time(10), title: "Weather")
+        weather.clump = .init(index: 1, count: 2)
+        let schedule = XMLTVSchedule(programmes: [
+            Programme(channelID: "c", start: time(9), stop: time(10), title: "Before"),
+            news, weather,
+            Programme(channelID: "c", start: time(11), stop: time(11), title: "Marker"),
+            Programme(channelID: "c", start: time(11), stop: time(12), title: "Film"),
+        ])
+        #expect(schedule.next("c", after: date(9, 30))?.programme.title == "News")
+        #expect(schedule.current("c", at: date(10, 15))?.programme.title == "News")
+        #expect(schedule.next("c", after: date(10, 30))?.programme.title == "Film")
+        #expect(schedule.current("c", at: date(11, 15))?.programme.title == "Film")
+    }
+
     @Test func currentIsTheLatestStartedOfOverlappingProgrammes() {
         let schedule = XMLTVSchedule(programmes: [
             Programme(channelID: "c", start: time(10), stop: time(11, 5), title: "A"),
@@ -135,6 +154,9 @@ struct ScheduleTests {
                 for date in [Date(timeIntervalSince1970: TimeInterval(seconds)), Date(timeIntervalSince1970: TimeInterval(seconds + 59))] {
                     let expected = schedule[channelID].filter { $0.isOnAir(at: date) }
                     #expect(schedule.onAir(channelID, at: date) == expected)
+                    // Latest start, then first in the feed.
+                    let latest = expected.map(\.start.secondsSince1970).max()
+                    #expect(schedule.current(channelID, at: date) == expected.first { $0.start.secondsSince1970 == latest })
                 }
             }
         }

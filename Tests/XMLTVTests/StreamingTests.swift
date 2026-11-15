@@ -95,6 +95,47 @@ struct StreamingTests {
         #expect(peak < 6 << 20, "buffers peaked at \(peak) bytes for \(xml.utf8.count) bytes of XML")
     }
 
+    /// Whitespace between records is dropped as it arrives, however long the run. Anything
+    /// else that would have to be held whole, beyond the limit, throws on every streaming path;
+    /// a whole-document parse holds the input anyway, and reads it.
+    @Test func streamingMemoryIsBoundedByTheRecordLimit() async throws {
+        let limit = 64 << 10
+        let options = XMLTVOptions(maximumRecordSize: limit)
+        let record = programme("<title>t</title>") + "\n"
+        let padded = "<tv>" + record + String(repeating: " ", count: 2 << 20) + record + "</tv>" + String(repeating: "\n", count: 1 << 20)
+        var decoder = StreamDecoder(options: options)
+        var peak = 0, count = 0
+        let bytes = Array(try gzip(padded))
+        var offset = 0
+        loop: while true {
+            switch try decoder.next() {
+            case .item: count += 1
+            case .end: break loop
+            case .needsInput:
+                if offset < bytes.count {
+                    let end = min(bytes.count, offset + 4096)
+                    try bytes[offset..<end].withUnsafeBufferPointer { try decoder.append($0) }
+                    offset = end
+                } else {
+                    try decoder.finish()
+                }
+            }
+            peak = max(peak, decoder.bufferCapacity)
+        }
+        #expect(count == 2)
+        #expect(peak < 4 << 20, "buffers peaked at \(peak) bytes")
+
+        let large = String(repeating: "x", count: 2 * limit)
+        for body in ["<!--\(large)-->", "<ext>\(large)</ext>", programme("<title>\(large)</title>")] {
+            let xml = "<tv>" + record + body + record + "</tv>"
+            #expect(try parse(xml).programmes.count >= 2)
+            let isTooLarge: (any Error) -> Bool = { ($0 as? XMLTVError)?.kind == .recordTooLarge(maximumSize: limit) }
+            #expect(performing: { try streamDecode(Array(xml.utf8), chunkSize: 4096, options: options) }, throws: isTooLarge)
+            #expect(performing: { var reader = XMLTVReader(data: try gzip(xml), options: options); while try reader.next() != nil {} }, throws: isTooLarge)
+            await #expect(performing: { _ = try await XMLTVDocument(chunks: chunks(Data(xml.utf8), size: 4096), options: options) }, throws: isTooLarge)
+        }
+    }
+
     /// After an error, a reader keeps throwing it, rather than spinning or reading on.
     @Test func readerErrorsAreFinal() throws {
         let gz = try gzip(document(programme("<title>t</title>")))
@@ -262,6 +303,21 @@ struct StreamingTests {
         let direct = ProbeBytes(data: [1, 2, 3])
         for await _ in direct {}
         #expect(direct.counter.mainThreadCalls.load(ordering: .relaxed) > 0)
+        #endif
+    }
+
+    /// An explicit `next()` stays on the caller's actor, as `for try await` does, rather than
+    /// hopping off it for every record.
+    @MainActor @Test func explicitNextRunsOnTheCallersActor() async throws {
+        #if canImport(Darwin)
+        let data = try Fixtures.data("upstream_test.xml")
+        let source = ProbeChunks(chunks: stride(from: 0, to: data.count, by: 64).map { data.subdata(in: $0..<min(data.count, $0 + 64)) })
+        var iterator = XMLTVItems(chunks: source).makeAsyncIterator()
+        var count = 0
+        while try await iterator.next() != nil { count += 1 }
+        #expect(count == (try XMLTVDocument(data: data)).items.count)
+        let calls = source.mainThreadCalls.calls.load(ordering: .relaxed)
+        #expect(calls > 1 && source.mainThreadCalls.mainThreadCalls.load(ordering: .relaxed) == calls)
         #endif
     }
 

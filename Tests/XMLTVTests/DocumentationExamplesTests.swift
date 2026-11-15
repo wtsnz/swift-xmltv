@@ -202,7 +202,7 @@ actor Importer {
 extension Importer {
     func importAll<Chunks>(_ items: XMLTVItems<Chunks>) async throws -> XMLTVReport {
         var iterator = items.makeAsyncIterator()
-        while let item = try await iterator.next(isolation: self) {
+        while let item = try await iterator.next() {
             _ = item   // store it
         }
         return iterator.report

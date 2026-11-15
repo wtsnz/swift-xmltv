@@ -10,6 +10,8 @@
 ///
 /// Gzip input is held compressed and inflated a step at a time, only when the decoder needs more,
 /// so the window stays at about one record plus one step however well the input compresses.
+/// Whitespace between records is dropped as it arrives, and anything else that would make the
+/// window hold more than ``XMLTVOptions/maximumRecordSize`` at once throws.
 ///
 /// The first error thrown is final: every later call throws it again.
 struct StreamDecoder: ~Copyable {
@@ -232,7 +234,9 @@ struct StreamDecoder: ~Copyable {
     private mutating func nextStep() throws(XMLTVError) -> Step {
         if isEnded { return .end }
         while true {
+            skipWhitespaceBetweenRecords()
             guard isFinal || window.count >= retryAt else {
+                if window.count - consumed > options.maximumRecordSize { throw tooLarge(at: consumed) }
                 if try refill() { continue }
                 return .needsInput
             }
@@ -261,6 +265,14 @@ struct StreamDecoder: ~Copyable {
                 throw located(error)
             }
 
+            // The limit applies to each construct, however its bytes arrived, so that the
+            // outcome does not depend on the chunking.
+            switch item {
+            case .channel, .programme, .skipped:
+                if decoder.scanner.position - callStart > options.maximumRecordSize { throw tooLarge(at: callStart) }
+            case .rootClosed, .boundary, .end:
+                break
+            }
             consumed = decoder.scanner.position
             commitSamples(from: sampleCount)
             switch item {
@@ -276,6 +288,19 @@ struct StreamDecoder: ~Copyable {
                 return .end
             }
         }
+    }
+
+    private func tooLarge(at offset: Int) -> XMLTVError {
+        located(XMLTVError(.recordTooLarge(maximumSize: options.maximumRecordSize), byteOffset: offset))
+    }
+
+    /// Consumes whitespace after the last record, which the decoder would only skip. Without
+    /// this, a run of whitespace would be held whole, as one unfinished token, until it ended.
+    private mutating func skipWhitespaceBetweenRecords() {
+        guard decoder.phase == .body || decoder.phase == .epilog, let base = window.bytes.baseAddress else { return }
+        let start = consumed
+        while consumed < window.count && base[consumed].isXMLWhitespace { consumed += 1 }
+        if consumed > start { retryAt = 0 }
     }
 
     /// Converts the window offsets of samples committed since `index` to document offsets.

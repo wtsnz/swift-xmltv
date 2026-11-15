@@ -8,7 +8,7 @@ import Testing
 struct TimestampTests {
     static let start = #"start="20240101120000 +0000""#
 
-    func outcome(_ text: String, zones: [String: Int32] = XMLTVOptions().namedTimeZones) -> TimestampParser.Outcome {
+    func outcome(_ text: String, zones: [String: Int] = XMLTVOptions().namedTimeZones) -> TimestampParser.Outcome {
         Array(text.utf8).withUnsafeBufferPointer { TimestampParser.parse($0, namedZones: zones) }
     }
 
@@ -40,7 +40,7 @@ struct TimestampTests {
             for text in ["\(digits) \(zone)", "\(digits)\(zone)"] {
                 guard let timestamp = valid(text) else { Issue.record("rejected \(text)"); continue }
                 #expect(timestamp.secondsSince1970 == expected, "\(text)")
-                #expect(timestamp.utcOffsetSeconds == Int32(offsetMinutes * 60))
+                #expect(timestamp.utcOffsetSeconds == offsetMinutes * 60)
                 #expect(timestamp.precision == .second && timestamp.isTimeZoneKnown)
             }
         }
@@ -146,6 +146,24 @@ struct TimestampTests {
             let expected = String(format: "%04d-%02d-%02dT01:02:03Z", parts.year!, parts.month!, parts.day!)
             #expect(XMLTVTimestamp(secondsSince1970: seconds).description == expected)
         }
+    }
+
+    /// A description names the instant it holds, whatever the offset, and always marks an
+    /// unresolved zone. Offsets take the `Int` that `TimeZone` gives.
+    @Test func descriptionsNameTheirInstant() throws {
+        #expect(XMLTVTimestamp(secondsSince1970: 0, utcOffsetSeconds: 3661).description == "1970-01-01T01:01:01+01:01:01")
+        #expect(XMLTVTimestamp(secondsSince1970: 0, utcOffsetSeconds: -3661).description == "1969-12-31T22:58:59-01:01:01")
+        #expect(try XMLTVTimestamp("2024 IST", policy: .lenient).description == "2024 (unresolved zone name, read as UTC)")
+        #expect(try XMLTVTimestamp("20240517 IST", policy: .lenient).description == "2024-05-17 (unresolved zone name, read as UTC)")
+
+        let paris = TimeZone(identifier: "Europe/Paris")!
+        var options = XMLTVOptions()
+        options.namedTimeZones["CET"] = paris.secondsFromGMT(for: Date(timeIntervalSince1970: 1_704_067_200))
+        let date = Date(timeIntervalSince1970: 1_704_067_200)
+        #expect(XMLTVTimestamp(date, utcOffsetSeconds: paris.secondsFromGMT(for: date)).utcOffsetSeconds == 3600)
+        #expect(XMLTVTimestamp(secondsSince1970: 0, utcOffsetSeconds: .max).utcOffsetSeconds == Int(Int32.max))
+        let guide = try XMLTVDocument(data: Data(#"<tv><programme start="20240101120000 CET" channel="c"><title>t</title></programme></tv>"#.utf8), options: options)
+        #expect(guide.programmes[0].start.description == "2024-01-01T12:00:00+01:00")
     }
 
     /// Every value the initializers and `Codable` accept can be shown and measured.

@@ -8,12 +8,13 @@ What the parser costs, where the time goes, and which options change it.
 
 Apple M4 Max with 12 performance and 4 efficiency cores, Swift 6.4, release build, warm page
 cache. Each figure is the median of 7 runs, except the Foundation baseline, which was run once.
-Every figure builds the complete model, every DTD
-field, unless the column says otherwise.
+Every figure builds the complete model, every DTD field, unless the column says otherwise, and
+includes reading the file. "One thread" is ``XMLTVOptions/Parallelism/serial``, which reads the
+file on one thread too: about 100 ms of the 1.93 GB feed's 3.6 seconds.
 
 | Feed | Size | ``XMLTVDocument`` | One thread | ``XMLTVReader`` | Keeping 1/64 of channels |
 |---|---:|---:|---:|---:|---:|
-| epgshare01 ALL_SOURCES | 1.93 GB | 442 ms, 4.36 GB/s | 0.56 GB/s | 0.47 GB/s | 15.5 GB/s |
+| epgshare01 ALL_SOURCES | 1.93 GB | 442 ms, 4.36 GB/s | 0.53 GB/s | 0.47 GB/s | 15.5 GB/s |
 | epgshare01 US2, dense | 78 MB | 18.2 ms, 4.29 GB/s | 0.56 GB/s | 0.48 GB/s | 13.8 GB/s |
 | epgshare01 DE1, many credits | 25 MB | 7.2 ms, 3.52 GB/s | 0.55 GB/s | 0.46 GB/s | 9.9 GB/s |
 | Plex US, sparse | 15.5 MB | 4.5 ms, 3.48 GB/s | 0.59 GB/s | 0.47 GB/s | 8.6 GB/s |
@@ -29,8 +30,9 @@ The library is about 88 times faster than the first while doing more work. On on
 builds the whole model at about the speed the second counts elements, and across cores it is 8
 times faster.
 
-All figures are for release builds. A debug build of an app runs the parser unoptimised, and
-the serial paths, ``XMLTVReader`` and ``XMLTVItems``, slow to about 1 MB/s. Measure in release.
+All figures are for release builds. A debug build of an app runs the parser unoptimised: the
+serial paths, ``XMLTVReader`` and ``XMLTVItems``, slow to 12–17 MB/s, about 40 times slower,
+and ``XMLTVDocument`` to about 0.14 GB/s. Measure in release.
 
 Run the benchmarks yourself with the harness in `Benchmarks/xmltv-bench`:
 

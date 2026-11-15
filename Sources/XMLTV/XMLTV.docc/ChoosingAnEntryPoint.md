@@ -14,7 +14,7 @@ is available.
 |---|---|---|---|
 | Input | file, `Data`, or chunks | file, `Data` | `AsyncSequence` of byte chunks or bytes |
 | Cores | all, for files and `Data` of 1 MiB or more; one for chunks | one | one |
-| Memory | the whole result, plus the input | bounded: a 1 MiB read buffer, up to 1 MiB of decompressed gzip, a 4 MiB string table and one record | bounded, as for the reader, plus unread chunks |
+| Memory | the whole result, plus the input | bounded: a 1 MiB read buffer, up to 1 MiB of decompressed gzip, a 4 MiB string table and one record, which ``XMLTVOptions/maximumRecordSize`` limits | bounded, as for the reader, plus unread chunks |
 | First record | after the whole parse | immediately | as soon as its bytes arrive |
 
 For a guide on the network, download it to a file and use ``XMLTVDocument``, unless you need
@@ -62,6 +62,12 @@ for the whole process while reading the 1.93 GB feed, plain or gzipped, against 
 ``XMLTVDocument``. Gzip input is decompressed 1 MiB at a time, as the reader needs it. Most of
 the memory is a table of strings already made, which makes repeated text cheap. It holds the
 first 4 MiB of distinct strings and then stops growing.
+
+The rest is the record being read, so the bound holds for any input only because a record has
+a limit: ``XMLTVOptions/maximumRecordSize``, 16 MiB by default. A guide's records are a few
+kilobytes. Input built to exhaust memory, such as a 1.5 MB `.gz` that expands to a 1.5 GB
+comment, throws ``XMLTVError/Kind/recordTooLarge(maximumSize:)`` instead, at about 60 MiB of
+memory. Whitespace between records is not held, however long the run.
 
 A reader is a single pass over its input, so it is noncopyable: a copy would be a second owner
 taking records from the same cursor. The compiler enforces this, which means a reader is held
@@ -137,13 +143,16 @@ and several GB/s for ``XMLTVDocument``. A network is usually slower than all of 
 fastest result, download to a file.
 
 Iteration is pull-driven, with no background task. Each call to `next()` decodes up to the next
-record and reads more chunks only when it has to. Decoding runs on the caller's actor: a loop on
-the main actor parses on the main thread, in record-sized steps between suspensions. That is
-fine in a release build, but a debug build parses at about 1 MB/s, so a large import from the
-main actor blocks it there; iterate in a `@concurrent` function instead. Memory stays bounded as long as the source
-also waits to be asked, as `URLSession.AsyncBytes` does. An `AsyncStream` that a delegate feeds
-with `Data` buffers whatever it is given, so a slow consumer makes it grow. Do not give such a
-stream a dropping buffering policy: a dropped chunk is lost XML.
+record and reads more chunks only when it has to. Decoding runs on the caller's actor, whether
+through `for try await` or a call to `next()`: a loop on the main actor parses on the main
+thread, in record-sized steps between suspensions. That is
+fine in a release build, but a debug build parses at about 15 MB/s, so a large import on the
+main actor holds it for seconds there; iterate in a `@concurrent` function instead.
+
+Memory stays bounded as long as the source also waits to be asked, as `URLSession.AsyncBytes`
+does. An `AsyncStream` that a delegate feeds with `Data` buffers whatever it is given, so a slow
+consumer makes it grow. Do not give such a stream a dropping buffering policy: a dropped chunk
+is lost XML.
 
 ### Concurrency
 
@@ -210,14 +219,14 @@ let count = try await Task.detached {
 #### Iterate items in an actor
 
 `for try await` over ``XMLTVItems`` works in an actor method as anywhere else. If you need the
-iterator itself, keep it in a local variable of the method and pass the actor's isolation, so
-the chunks are read on the actor:
+iterator itself, keep it in a local variable of the method. `next()` runs on the caller's
+actor, as the loop does, so the chunks are read on the actor:
 
 ```swift
 extension Importer {
     func importAll<Chunks>(_ items: XMLTVItems<Chunks>) async throws -> XMLTVReport {
         var iterator = items.makeAsyncIterator()
-        while let item = try await iterator.next(isolation: self) {
+        while let item = try await iterator.next() {
             _ = item   // store it
         }
         return iterator.report

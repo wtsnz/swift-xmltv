@@ -1,7 +1,7 @@
 extension Programme {
     /// An `<episode-num>` in some numbering `system`. The text is kept exactly as written. The
     /// accessors interpret the two systems the format defines.
-    public struct EpisodeNumber: Sendable, Hashable {
+    public struct EpisodeNumber: Sendable, Hashable, Codable {
         /// `onscreen` (the default), `xmltv_ns`, or a feed-specific system such as `dd_progid`.
         public var system: String
         /// The number exactly as written, such as `S01E05` or `0 . 4 . 0/1`.
@@ -62,7 +62,7 @@ extension Programme {
     ///
     /// Any field may be nil, but a value always has a season or an episode. Totals and parts
     /// are only ever filled in from `xmltv_ns`, which is the only system that records them.
-    public struct SeasonEpisode: Sendable, Hashable {
+    public struct SeasonEpisode: Sendable, Hashable, Codable {
         /// The season, such as 3 in `S03E10`.
         public var season: Int?
         /// The episode within the season, such as 10 in `S03E10`.

@@ -167,6 +167,7 @@ struct RecoveryTests {
             <rating><value>FIRST</value><value>LAST</value></rating>
             <review type="text" type="url" source="FIRST" source="LAST">r</review>
             <image type="poster" type="backdrop" size="1" size="3">i</image>
+            <credits><actor>A</actor></credits><credits><actor>B</actor></credits>
             """
         let guide = try parse(document(programme(children, attributes: #"start="20240101120000" channel="c" clumpidx="bad" clumpidx="0/2""#)))
         let programme = guide.programmes[0]
@@ -178,6 +179,9 @@ struct RecoveryTests {
         #expect(programme.reviews.first?.type == "text" && programme.reviews.first?.source == "FIRST")
         #expect(programme.images.first?.type == "poster" && programme.images.first?.size == "1")
         #expect(programme.clump == .single)
+        #expect(programme.credits.map(\.name) == ["A"])
+        let emptyFirst = try parse(document(XMLTVTests.programme("<title>t</title><credits/><credits><actor>B</actor></credits>")))
+        #expect(emptyFirst.programmes[0].credits.isEmpty)
         // The invalid first values are reported once each, and the later ones are not used.
         #expect(guide.report.diagnosticCountsByCode == [.invalidValue: 3])
     }

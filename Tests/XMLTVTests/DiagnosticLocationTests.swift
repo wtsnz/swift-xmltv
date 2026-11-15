@@ -119,6 +119,43 @@ struct DiagnosticLocationTests {
         }
     }
 
+    /// Content after the root that ends unfinished is reported where it starts, after the
+    /// complete comments before it, however many of those an earlier chunk held.
+    @Test func unfinishedContentAfterTheRootIsReportedWhereItStarts() throws {
+        let xml = "<tv></tv><!--a\nb\nc--><!-- unterminated"
+        let report = try expectSamePaths(xml, chunkSizes: Array(1...24)).report
+        #expect(report.diagnostics.map(\.byteOffset) == ["<tv></tv><!--a\nb\nc-->".utf8.count])
+        #expect(report.diagnostics.map(\.line) == [3])
+    }
+
+    /// A problem in text is reported at the bad byte, not the start of the value, even after
+    /// line ends and references that decoding changes, and in every kind of text.
+    @Test func textProblemsAreReportedWhereTheyAre() throws {
+        let head = Array("<tv><programme start=\"20240101000000\" channel=\"c\"><title>t</title><desc>first &amp;\r\nbad".utf8)
+        let bad = head.count
+        let cases: [(bytes: [UInt8], kind: XMLTVError.Code)] = [
+            (head + [0x00] + Array("</desc></programme></tv>".utf8), .invalidCharacter),
+            (head + [0xFF] + Array("</desc></programme></tv>".utf8), .invalidUTF8),
+            (head + Array("<!---->x".utf8) + [0x01] + Array("</desc></programme></tv>".utf8), .invalidCharacter),
+        ]
+        for (index, (bytes, kind)) in cases.enumerated() {
+            let report = try expectSamePaths(bytes: bytes).report
+            let offset = index == 2 ? bad + "<!---->x".utf8.count : bad
+            #expect(report.diagnostics.map(\.code) == [kind])
+            #expect(report.diagnostics.map(\.byteOffset) == [offset])
+            #expect(report.diagnostics.map(\.line) == [2])
+            #expect(throws: XMLTVError.self) { try XMLTVDocument(data: Data(bytes), options: XMLTVOptions(policy: .strict)) }
+            do {
+                _ = try XMLTVDocument(data: Data(bytes), options: XMLTVOptions(policy: .strict))
+            } catch {
+                #expect(error.line == 2 && error.column == offset - bad + 4)
+            }
+        }
+        // An attribute value that is decoded first.
+        let attribute = Array(#"<tv><channel id="a&amp;"#.utf8) + [0xFF] + Array(#""><display-name>A</display-name></channel></tv>"#.utf8)
+        #expect(try expectSamePaths(bytes: attribute).report.diagnostics.map(\.byteOffset) == [#"<tv><channel id="a&amp;"#.utf8.count])
+    }
+
     @Test func truncatedGzipReportsTheCauseBeforeItsEffect() throws {
         let gz = try Fixtures.data("upstream_test.xml.gz")
         let report = try XMLTVDocument(data: gz.prefix(gz.count / 2)).report

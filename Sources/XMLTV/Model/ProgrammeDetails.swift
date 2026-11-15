@@ -11,7 +11,7 @@ extension Programme {
         /// The raw value is the element name, such as `"director"`. New roles may be added in a
         /// minor release, as the DTD has added them before, so a `switch` needs `@unknown default`.
         @nonexhaustive
-        public enum Role: String, Sendable, Hashable, CaseIterable {
+        public enum Role: String, Sendable, Hashable, CaseIterable, Codable {
             case director, actor, writer, adapter, producer, composer, editor, presenter, commentator, guest
         }
 
@@ -40,7 +40,7 @@ extension Programme {
     }
 
     /// A `<rating>`: a classification such as `<rating system="MPAA"><value>PG</value></rating>`.
-    public struct Rating: Sendable, Hashable {
+    public struct Rating: Sendable, Hashable, Codable {
         /// The rating scheme, such as `MPAA`, `VCHIP` or a country code.
         public var system: String?
         /// The classification, as written.
@@ -56,7 +56,7 @@ extension Programme {
     }
 
     /// A `<star-rating>`: a score such as `3/5` or `3.5 / 5`.
-    public struct StarRating: Sendable, Hashable {
+    public struct StarRating: Sendable, Hashable, Codable {
         /// Who gave the score, when the source says.
         public var system: String?
         /// A score as numbers: `stars` out of `maximum`.
@@ -184,7 +184,7 @@ extension Programme {
     /// Some sources can't say where one item ends and the next begins, as with "News; Weather" in a
     /// single 30-minute slot. They list each item as its own programme with the same times, and
     /// number them `0/2` and `1/2`.
-    public struct Clump: Sendable, Hashable {
+    public struct Clump: Sendable, Hashable, Codable {
         /// The zero-based position within the clump.
         public var index: Int
         /// The number of programmes in the clump.

@@ -93,6 +93,6 @@ final class FoundationBuilder: NSObject, XMLParserDelegate {
             offset = (field(o, 2) * 3600 + field(o + 2, 2) * 60) * (sign == 45 ? -1 : 1)
         }
         let seconds = days * 86_400 + field(8, 2) * 3600 + field(10, 2) * 60 + field(12, 2) - offset
-        return XMLTVTimestamp(secondsSince1970: Int64(seconds), utcOffsetSeconds: Int32(offset))
+        return XMLTVTimestamp(secondsSince1970: Int64(seconds), utcOffsetSeconds: offset)
     }
 }

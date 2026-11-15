@@ -66,7 +66,8 @@ Write code that expects them:
 - New diagnostics for input that was previously accepted silently.
 - Better wording in `localizedDescription` and ``XMLTVDiagnostic/message``.
 
-``Programme`` will not become `Identifiable` or `Codable`; its documentation explains why.
+``Programme`` and ``Channel`` will not become `Identifiable` or `Codable`; their documentation
+explains why.
 
 ## Topics
 

@@ -21,7 +21,8 @@ import Foundation
 /// `Programme` is not `Codable` either, and will not become so. To cache a guide, keep the
 /// downloaded file and parse it again: that is about 20 times faster than decoding the same
 /// records from JSON. The small values that apps embed in their own records, such as
-/// ``XMLTVTimestamp``, ``LocalizedText``, ``Icon`` and ``URLReference``, are `Codable`.
+/// ``XMLTVTimestamp``, ``LocalizedText``, ``EpisodeNumber`` and ``Rating``, are `Codable`;
+/// <doc:DesignDecisions> lists them.
 ///
 /// These are promises rather than omissions. If the library added either conformance later,
 /// it would silently replace one an app had declared itself.

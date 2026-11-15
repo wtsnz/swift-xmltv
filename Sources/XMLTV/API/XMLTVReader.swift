@@ -12,7 +12,7 @@ public enum XMLTVItem: Sendable, Hashable {
 
 /// Reads an XMLTV document one record at a time, in document order, in bounded memory: a 1 MiB
 /// read buffer, up to 1 MiB of decompressed gzip, a table of the first 4 MiB of distinct
-/// strings, and the record being read.
+/// strings, and the record being read, which ``XMLTVOptions/maximumRecordSize`` limits.
 ///
 /// ```swift
 /// var reader = try XMLTVReader(contentsOf: url)

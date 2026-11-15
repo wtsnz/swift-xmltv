@@ -25,7 +25,16 @@ enum EncodingDetector {
             throw XMLTVError(.malformedMarkup("the XML declaration is longer than 64 KiB"))
         }
         guard let declared = declaredEncoding(bytes) else { return (.utf8, 0) }
-        return (try encoding(named: declared), 0)
+        switch try encoding(named: declared) {
+        case .utf16LittleEndian, .utf16BigEndian:
+            // The declaration was just read as ASCII, so the document is not in UTF-16, which
+            // would have shown as a BOM or as the UTF-16 pattern of `<?xml` above. Writers that
+            // save a string as UTF-8 but keep the declaration it was made with, such as .NET's
+            // `StringWriter`, produce this. libxml2 reads it as UTF-8, and so does this.
+            return (.utf8, 0)
+        case let encoding:
+            return (encoding, 0)
+        }
     }
 
     /// How far to look for the end of the XML declaration. A declaration may contain any amount

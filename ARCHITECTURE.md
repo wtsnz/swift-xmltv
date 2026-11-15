@@ -145,9 +145,10 @@ and after. When you change the drivers, compare `document` on the largest feed y
   type named `XMLTV`, which would break the `XMLTV.Channel` spelling apps use to disambiguate.
 - An enum that may grow is `@nonexhaustive`. Adding a case to one is not breaking; adding the
   attribute to an existing closed enum is.
-- `Programme` and `Channel` do not gain `Identifiable`, beyond `Channel`'s existing one, or
-  `Codable`. The DocC catalog promises this, because a library conformance would silently
-  replace one an app declared.
+- `Programme` and `Channel` do not gain `Identifiable` or `Codable`, and no other existing type
+  gains `Codable`: the set is listed in DesignDecisions. A new type may be `Codable` from the
+  start. The DocC catalog promises this, because a
+  library conformance would silently replace one an app declared.
 - Every diagnostic is reported with the `XMLTVDiagnostic.Recovery` that describes what it
   cost. A new recovery rule picks an existing case if one fits.
 

@@ -22,6 +22,33 @@ struct FilterTests {
         #expect(byTime.programmes.map(\.title) == ["a2", "a3"])
     }
 
+    /// An empty window overlaps nothing, even with fractional bounds, a missing stop or an
+    /// unknown zone, all of which otherwise keep a programme that may overlap.
+    @Test func emptyTimeWindowKeepsNothing() throws {
+        let xml = document("""
+            \(programme("<title>a</title>", attributes: #"start="20240101120000 +0000" stop="20240101130000 +0000" channel="c""#))
+            \(programme("<title>b</title>", attributes: #"start="20240101120000 +0000" channel="c""#))
+            \(programme("<title>c</title>", attributes: #"start="20240101120000 XYZ" channel="c""#))
+            """)
+        for seconds in [1_704_112_200.0, 1_704_112_200.5] {
+            let point = Date(timeIntervalSince1970: seconds)
+            let options = XMLTVOptions(timeWindow: point..<point)
+            #expect(try parse(xml, options: options).programmes.isEmpty)
+            #expect(try streamDecode(Array(xml.utf8), chunkSize: 7, options: options).items.isEmpty)
+        }
+    }
+
+    /// A channel with no ID, or an empty one, is dropped and reported, unless a channel filter
+    /// is on: then it could never be selected, and is skipped like any excluded channel.
+    @Test func channelsWithoutAnIDFollowTheProgrammeRule() throws {
+        let xml = document(#"<channel><display-name>A</display-name></channel><channel id=""><display-name>B</display-name></channel>"#)
+        let unfiltered = try parse(xml)
+        #expect(unfiltered.channels.isEmpty && unfiltered.report.droppedChannelCount == 2)
+        #expect(unfiltered.report.diagnosticCountsByCode == [.missingAttribute: 2])
+        let filtered = try parse(xml, options: XMLTVOptions(channelIDs: ["c"]))
+        #expect(filtered.channels.isEmpty && filtered.report.diagnosticCount == 0)
+    }
+
     @Test func timeWindowKeepsPartialTimesThatMayOverlap() throws {
         let june = Date(timeIntervalSince1970: 1_717_200_000)   // 2024-06-01
         let window = XMLTVOptions(timeWindow: june ..< june.addingTimeInterval(30 * 86_400))

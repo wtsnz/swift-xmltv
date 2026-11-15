@@ -112,4 +112,50 @@ struct RobustnessTests {
             _ = try? XMLTVDocument(data: Data(mutated), options: .with { $0.policy = .strict })
         }
     }
+
+    /// Mutated documents give the same records, report or error on every path: serial, split
+    /// at a random byte, and streamed in small chunks, in both policies. Crashing is not the
+    /// only failure; disagreeing is one too.
+    @Test func mutatedDocumentsAgreeOnEveryPath() throws {
+        enum Outcome: Equatable {
+            case parsed([XMLTVItem], XMLTVReport)
+            case failed(XMLTVError)
+        }
+        func outcome(_ body: () throws(XMLTVError) -> (items: [XMLTVItem], report: XMLTVReport)) -> Outcome {
+            do {
+                let result = try body()
+                return .parsed(sortedByKind(result.items), result.report)
+            } catch {
+                return .failed(error)
+            }
+        }
+        var generator = SeededGenerator(seed: 11)
+        let base = Array(Self.sample.utf8)
+        let replacements: [UInt8] = Array("<>/&\"'= \n!?-[]x".utf8) + [0x0D, 0x00, 0xC3, 0xFF]
+        for _ in 0..<400 {
+            var bytes = base
+            for _ in 0..<Int.random(in: 1...4, using: &generator) {
+                let index = Int.random(in: 0..<bytes.count, using: &generator)
+                switch Int.random(in: 0..<3, using: &generator) {
+                case 0: bytes[index] = replacements.randomElement(using: &generator)!
+                case 1: bytes.remove(at: index)
+                default: bytes.insert(replacements.randomElement(using: &generator)!, at: index)
+                }
+            }
+            let split = Int.random(in: 1..<bytes.count, using: &generator)
+            for policy in [XMLTVOptions.Policy.lenient, .strict] {
+                let options = XMLTVOptions(policy: policy)
+                func items(_ output: DocumentDriver.Output) -> (items: [XMLTVItem], report: XMLTVReport) {
+                    (output.channels.map(XMLTVItem.channel) + output.programmes.map(XMLTVItem.programme), output.report)
+                }
+                let serial = outcome { () throws(XMLTVError) in items(try parse(bytes, splits: [], options: options)) }
+                let parallel = outcome { () throws(XMLTVError) in items(try parse(bytes, splits: [split], options: options)) }
+                #expect(parallel == serial, "split at \(split), \(policy)")
+                for chunkSize in [1, 5, 64] {
+                    let streamed = outcome { () throws(XMLTVError) in try streamDecode(bytes, chunkSize: chunkSize, options: options) }
+                    #expect(streamed == serial, "chunk \(chunkSize), \(policy)")
+                }
+            }
+        }
+    }
 }

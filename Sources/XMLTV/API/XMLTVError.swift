@@ -51,6 +51,10 @@ public struct XMLTVError: Error, Sendable, Hashable, CustomStringConvertible, Lo
         /// The input is not an XMLTV document: it is empty, it is not XML (such as a JSON error
         /// body), or its root element is not `<tv>` (such as an HTML error page).
         case notXMLTV
+        /// A streaming parse met a single construct larger than
+        /// ``XMLTVOptions/maximumRecordSize``, which is given, in bytes: a record, a skipped
+        /// element or a comment. Always fatal, whatever the policy.
+        case recordTooLarge(maximumSize: Int)
 
         // Content. Diagnostics in lenient mode.
 
@@ -88,6 +92,7 @@ public struct XMLTVError: Error, Sendable, Hashable, CustomStringConvertible, Lo
             case .mismatchedEndTag: .mismatchedEndTag
             case .unexpectedEndOfInput: .unexpectedEndOfInput
             case .notXMLTV: .notXMLTV
+            case .recordTooLarge: .recordTooLarge
             case .missingAttribute: .missingAttribute
             case .missingElement: .missingElement
             case .invalidValue: .invalidValue
@@ -121,6 +126,8 @@ public struct XMLTVError: Error, Sendable, Hashable, CustomStringConvertible, Lo
                 "The guide ends early, as if the download was cut off."
             case .notXMLTV:
                 "This is not an XMLTV guide."
+            case .recordTooLarge(let maximumSize):
+                "The guide has a record larger than the \(maximumSize / (1 << 20)) MiB that a streaming read allows."
             case .missingAttribute(let element, let attribute):
                 "\(Self.article(element)) <\(element)> has no “\(attribute)” attribute."
             case .missingElement(let element, let child):
@@ -158,7 +165,7 @@ public struct XMLTVError: Error, Sendable, Hashable, CustomStringConvertible, Lo
     @nonexhaustive
     public enum Code: String, Sendable, Hashable, CaseIterable, Codable {
         case io, notAFileURL, invalidCompressedData, unsupportedEncoding, invalidEncoding
-        case malformedMarkup, mismatchedEndTag, unexpectedEndOfInput, notXMLTV
+        case malformedMarkup, mismatchedEndTag, unexpectedEndOfInput, notXMLTV, recordTooLarge
         case missingAttribute, missingElement, invalidValue, invalidTimestamp, unresolvedTimeZone
         case unsupportedEntity, invalidUTF8, invalidCharacter, contentAfterRoot
     }

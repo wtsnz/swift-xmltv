@@ -13,7 +13,9 @@ the markup is damaged, the parser can no longer tell which text belongs to which
 guess would produce data that looks valid and isn't. Broken markup therefore always throws an
 ``XMLTVError``, whatever the policy. Input that simply stops, even inside a tag or a quoted
 value, is different: it is a cut-off download, and lenient mode keeps every record before the
-cut.
+cut. A streaming parse also throws, in either mode, at a single record larger than
+``XMLTVOptions/maximumRecordSize``: ``XMLTVError/Kind/recordTooLarge(maximumSize:)`` is a limit
+on memory, not a problem with the guide.
 
 **Bad content** means the markup is fine but a value is wrong: a timestamp with minute 60, a
 `<length>` with no units, an unknown entity, invalid UTF-8 in a title, a programme with no
@@ -33,7 +35,7 @@ The rule for each kind of problem is fixed:
 | Unparseable `stop` or other time | The value becomes nil. | `valueDropped` |
 | Zone name missing from ``XMLTVOptions/namedTimeZones`` | Read as UTC, and ``XMLTVTimestamp/isTimeZoneKnown`` is false. | `assumedDefault` |
 | Programme without `start`, or with no or an empty `channel` | The programme is dropped. | `programmeDropped` |
-| Channel without `id` | The channel is dropped. | `channelDropped` |
+| Channel with no or an empty `id` | The channel is dropped. | `channelDropped` |
 | Programme without a title, channel without a display name | Kept, with an empty array. | `keptAsWritten` |
 | `<rating>12</rating>` with no `<value>` | The direct text becomes the value. | `repaired` |
 | `<rating>` with neither | The rating is dropped. | `valueDropped` |
@@ -46,7 +48,8 @@ The rule for each kind of problem is fixed:
 | Empty or unparseable `<length>`, or one without known units; unparseable `clumpidx` or icon size | The value becomes nil, or the default. | `valueDropped` |
 | Content after `</tv>` | Ignored. This is usually a second document appended to the first. | `restOfInputIgnored` |
 | Input ends inside the document | Every complete record is kept, and ``XMLTVReport/isTruncated`` is true. | `restOfInputIgnored` |
-| Truncated or corrupt gzip stream | Everything decompressed before the damage is parsed, as for a cut-off download. | `restOfInputIgnored` |
+| Truncated gzip stream | Everything decompressed before the cut is parsed, as for a cut-off download. | `restOfInputIgnored` |
+| Corrupt gzip stream | The same, but zlib usually emits some garbage before it detects the damage, and the garbage is then broken markup, which throws. | `restOfInputIgnored` |
 | Malformed UTF-16 | Replaced with U+FFFD. | `repaired` |
 
 The defaults come from the feeds this library was tested against. The 1.93 GB benchmark feed
@@ -151,8 +154,8 @@ input is not a guide, ``XMLTVError/Kind/notXMLTV``; after the root it is
   such as `<length>`, are not reported. The first occurrence is used, even when it is invalid.
 - A channel ID declared more than once is not reported. ``XMLTVDocument/channels`` keeps every
   record, and ``XMLTVSchedule/channel(_:)`` returns the first. The 1.93 GB feed declares 200
-  IDs twice, so key a SwiftUI list of channels by ``XMLTVSchedule/channelIDs``, which lists
-  each once, rather than by ``Channel/id``.
+  IDs twice, which is why ``Channel`` is not `Identifiable`: key a SwiftUI list of channels by
+  ``XMLTVSchedule/channelIDs``, which lists each once.
 - The XML declaration's version is not checked; a document that declares 1.1 is read by the
   XML 1.0 rules. Text directly inside `<tv>`, and elements in the wrong place, such as a nested
   `<tv>`, are skipped like unknown elements.
@@ -162,4 +165,6 @@ input is not a guide, ``XMLTVError/Kind/notXMLTV``; after the root it is
 Records left out by ``XMLTVOptions/channelIDs`` or ``XMLTVOptions/timeWindow`` report nothing,
 whatever their problems: they are skipped before their content is decoded. The values needed
 to make the choice are still read, so in strict mode a broken `channel` attribute still
-throws, and with a time window, so does a start time that cannot be parsed.
+throws, and with a time window, so does a start time that cannot be parsed. A channel with no
+`id`, or a programme with no `channel`, can never be selected by a channel filter, so with one
+it is skipped without a report too.

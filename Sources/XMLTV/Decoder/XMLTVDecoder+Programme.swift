@@ -85,8 +85,9 @@ extension XMLTVDecoder {
         of name: ByteRange, into programme: inout Programme,
         details: inout Programme.Details.Fields, hasDetails: inout Bool
     ) throws(XMLTVError) {
-        // An invalid `<length>` decodes as nil but still counts as the first.
-        var hasLength = false
+        // An invalid `<length>` decodes as nil, and an empty `<credits/>` adds nobody, but each
+        // still counts as the first of its kind.
+        var hasLength = false, hasCredits = false
         while true {
             switch try scanner.next() {
             case .startTag(let child, let isEmpty):
@@ -94,24 +95,32 @@ extension XMLTVDecoder {
                 switch tag {
                 // Common fields, stored inline in `Programme`.
                 case .title:
-                    append(try localizedText(child, isEmpty: isEmpty), to: &programme.titles, expecting: expectedCounts.titles)
+                    Self.append(try localizedText(child, isEmpty: isEmpty), to: &programme.titles, expecting: expectedCounts.titles)
                 case .subTitle:
-                    append(try localizedText(child, isEmpty: isEmpty), to: &programme.episodeTitles, expecting: expectedCounts.episodeTitles)
+                    Self.append(try localizedText(child, isEmpty: isEmpty), to: &programme.episodeTitles, expecting: expectedCounts.episodeTitles)
                 case .desc:
-                    append(try localizedText(child, isEmpty: isEmpty), to: &programme.descriptions, expecting: expectedCounts.descriptions)
+                    Self.append(try localizedText(child, isEmpty: isEmpty), to: &programme.descriptions, expecting: expectedCounts.descriptions)
                 case .category:
-                    append(try localizedText(child, isEmpty: isEmpty), to: &programme.categories, expecting: expectedCounts.categories)
+                    Self.append(try localizedText(child, isEmpty: isEmpty), to: &programme.categories, expecting: expectedCounts.categories)
                 case .credits:
-                    try decodeCredits(child, isEmpty: isEmpty, into: &programme.credits)
+                    // `<credits>` is single-valued. A later one is decoded, so its problems are
+                    // reported as for any repeated child, but its people are not kept.
+                    if hasCredits {
+                        var ignored: [Programme.Credit] = []
+                        try decodeCredits(child, isEmpty: isEmpty, into: &ignored)
+                    } else {
+                        try decodeCredits(child, isEmpty: isEmpty, into: &programme.credits)
+                        hasCredits = true
+                    }
                 case .date:
                     let date = try textContent(of: child, isEmpty: isEmpty)
                     if programme.date == nil { programme.date = date }
                 case .episodeNum:
-                    append(try episodeNumber(child, isEmpty: isEmpty), to: &programme.episodeNumbers, expecting: expectedCounts.episodeNumbers)
+                    Self.append(try episodeNumber(child, isEmpty: isEmpty), to: &programme.episodeNumbers, expecting: expectedCounts.episodeNumbers)
                 case .icon:
-                    if let icon = try icon(child, isEmpty: isEmpty) { append(icon, to: &programme.icons, expecting: expectedCounts.icons) }
+                    if let icon = try icon(child, isEmpty: isEmpty) { Self.append(icon, to: &programme.icons, expecting: expectedCounts.icons) }
                 case .rating:
-                    if let rating = try rating(child, isEmpty: isEmpty) { append(rating, to: &programme.ratings, expecting: expectedCounts.ratings) }
+                    if let rating = try rating(child, isEmpty: isEmpty) { Self.append(rating, to: &programme.ratings, expecting: expectedCounts.ratings) }
                 case .starRating:
                     if let rating = try rating(child, isEmpty: isEmpty) {
                         programme.starRatings.append(Programme.StarRating(rating.value, system: rating.system, icons: rating.icons))
@@ -182,7 +191,7 @@ extension XMLTVDecoder {
             switch try scanner.next() {
             case .startTag(let child, let childIsEmpty):
                 if let role = Programme.Credit.Role(XMLTVElement(scanner.pointer(to: child))) {
-                    append(try credit(role, child, isEmpty: childIsEmpty), to: &credits, expecting: expectedCounts.credits)
+                    Self.append(try credit(role, child, isEmpty: childIsEmpty), to: &credits, expecting: expectedCounts.credits)
                 } else {
                     try skipContent(of: child, isEmpty: childIsEmpty)
                 }
@@ -260,7 +269,7 @@ extension XMLTVDecoder {
                 for piece in pieces {
                     try text.appendPiece(piece.range, mode: piece.mode, needsDecoding: piece.needsDecoding, in: scanner, diagnostics: &diagnostics)
                 }
-                credit.name = try text.finishPieces(at: pieces.first?.range.start ?? elementStart, diagnostics: &diagnostics)
+                credit.name = text.finishPieces()
                 return credit
             case .endOfInput:
                 throw scanner.truncated()
@@ -325,7 +334,7 @@ extension XMLTVDecoder {
             for piece in directText {
                 try text.appendPiece(piece.range, mode: piece.mode, needsDecoding: piece.needsDecoding, in: scanner, diagnostics: &diagnostics)
             }
-            value = try text.finishPieces(at: directText[0].range.start, diagnostics: &diagnostics)
+            value = text.finishPieces()
         }
         return Programme.Rating(value!, system: system, icons: icons)
     }
@@ -481,8 +490,11 @@ extension XMLTVDecoder {
     /// Appends to one of a programme's arrays. The first append reserves as many elements as the
     /// previous programme had: feeds are homogeneous, so this usually allocates once instead of
     /// regrowing at 1, 2, 4 elements.
+    ///
+    /// Static, so that an unoptimised build does not copy the decoder, and with it the string
+    /// table, to call it while an argument is mutating the decoder.
     @inline(__always)
-    private func append<Element>(_ element: Element, to array: inout [Element], expecting count: Int) {
+    private static func append<Element>(_ element: Element, to array: inout [Element], expecting count: Int) {
         if array.isEmpty && count > 1 { array.reserveCapacity(count) }
         array.append(element)
     }

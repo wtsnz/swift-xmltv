@@ -40,14 +40,17 @@ public struct TVInfo: Sendable, Hashable {
 ///
 /// XMLTV does not require a programme's channel to be declared. Look channels up by ID, and be
 /// prepared for programmes on channels that have no record.
-public struct Channel: Sendable, Hashable, Identifiable {
+///
+/// `Channel` is not `Identifiable`, and will not become so, for the same reason as
+/// ``Programme``: feeds repeat channel IDs. For a SwiftUI list of channels, use
+/// ``XMLTVSchedule/channelIDs``, which lists each ID once: `List(schedule.channelIDs, id: \.self)`.
+public struct Channel: Sendable, Hashable {
     /// The identifier programmes use in their `channel` attribute, such as `BBC.One.uk`. Often,
     /// but not always, a DNS-like name.
     ///
     /// IDs are not unique in every feed. Merged feeds in particular declare some channels twice,
-    /// often with different details, and both records are kept in document order. Before using
-    /// ``XMLTVDocument/channels`` where IDs must be unique, such as a SwiftUI `List`, keep one
-    /// record per ID, for example with ``XMLTVDocument/channel(id:)``, which returns the first.
+    /// often with different details, and both records are kept in document order.
+    /// ``XMLTVDocument/channel(id:)`` and ``XMLTVSchedule/channel(_:)`` return the first.
     public var id: String
     /// Names for the channel, most preferred first. Valid XMLTV has at least one.
     public var displayNames: [LocalizedText]

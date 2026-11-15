@@ -28,14 +28,15 @@ become values.
 
 The library reads XML with its own scanner, not `XMLParser` or libxml2. `XMLParser` reaches
 0.05 GB/s on these feeds. libxml2's SAX2 interface reaches 0.55 GB/s on one thread just
-counting elements (`Benchmarks/libxml2-sax-count.c`). A parser built on it does that work and
-then builds the model, so it is slower on one thread than this library, which builds the whole
-model at about 0.56 GB/s. Using more cores would need the same speculative splitting as here, on top
-of an interface not designed for it.
+counting elements (`Benchmarks/libxml2-sax-count.c`). This library builds the whole model, and
+reads the file, at about that speed on one thread: 0.53 GB/s. A parser on libxml2 would do the
+counting work and then build the model, and using more cores would need the same speculative
+splitting as here, on top of an interface not designed for it.
 
-The cost is generality. The scanner handles the XML that XMLTV uses and checks it for
-well-formedness, but it does not expand DTD-declared entities, resolve namespaces or read
-XML 1.1. <doc:FormatSupport> lists exactly what is out. No feed in the test corpus uses any of
+The cost is generality. The scanner handles the XML that XMLTV uses and checks its structure:
+nesting, tag and attribute syntax, comments and declarations, with the few lexical exceptions
+that <doc:ErrorsAndDiagnostics> lists. It does not expand DTD-declared entities, resolve
+namespaces or read XML 1.1. <doc:FormatSupport> lists exactly what is out. No feed in the test corpus uses any of
 these.
 
 ### Rare fields in one shared box
@@ -193,7 +194,7 @@ The cost is that the library needs Swift 6.2.3, the first release with the attri
 callers write one more line. ``XMLTVTimestamp/Precision`` stays closed, because the format
 cannot gain a seventh precision.
 
-### Programmes have no identity
+### Programmes and channels have no identity
 
 XMLTV gives a broadcast no identifier, and no combination of fields is unique in real feeds.
 In the 42,000-programme UK feed, 401 programmes are exact copies of another. In the 1.93 GB
@@ -202,8 +203,10 @@ other, and 200 channel IDs are declared twice. An `Identifiable` conformance bui
 those fields would give SwiftUI duplicate IDs, and one built from position would change on
 every refresh while looking stable.
 
-So ``Programme`` is not `Identifiable`, and the library promises it never will be. That
-promise matters: if the library added the conformance later, Swift would silently prefer it
+So ``Programme`` is not `Identifiable`, and the library promises it never will be. Nor is
+``Channel``: the DTD means its `id` to be unique, but merged feeds repeat it, and a list keyed
+by it would get duplicate IDs. ``XMLTVSchedule/channelIDs`` lists each ID once, for that use.
+The promise matters: if the library added the conformance later, Swift would silently prefer it
 over one an app had declared, and the app's identities would change without an error.
 ``XMLTVSchedule/Entry`` does have an identity, because within a schedule one can be made
 honestly: the channel, the start instant, and the entry's position among those that start at
@@ -235,10 +238,16 @@ record of the source.
 - **`Codable` on `Programme` and `Channel`.** Re-parsing the downloaded `.xml.gz` is about 20
   times faster than decoding even a reduced set of the same fields from JSON, and the file is
   an eighth of the size (the `json` benchmark mode), so the library recommends caching the
-  file. A conformance would also be a second
-  compatibility contract, and, like `Identifiable`, would silently replace one an app had
-  written. The small values apps embed in their own records, such as ``XMLTVTimestamp``,
-  ``LocalizedText``, ``Icon`` and ``URLReference``, are `Codable`.
+  file. A conformance would also be a second compatibility contract, and, like `Identifiable`,
+  would silently replace one an app had written.
+
+  For the same reason, which of today's types are `Codable` is settled now, not grown later:
+  the small values apps embed in their own records. They are ``XMLTVTimestamp``, ``LocalizedText``,
+  ``Icon``, ``URLReference``, ``Programme/Image``, ``Programme/EpisodeNumber``,
+  ``Programme/SeasonEpisode``, ``Programme/Rating``, ``Programme/StarRating``,
+  ``Programme/Clump``, ``Programme/Credit/Role``, ``XMLTVEncoding``, and the schedule's
+  ``XMLTVSchedule/Entry/ID``. Records with many optional fields, such as credits, reviews and
+  video details, are not `Codable`, so that they can gain fields without breaking stored data.
 - **Parallel gzip.** The deflate format does not split cleanly. Decompression stays the limit
   for `.xml.gz`.
 - **A borrowed-view API.** See the first section.

@@ -46,7 +46,7 @@ enum DocumentDriver {
         defer { results.deinitialize().deallocate() }
         let sharedResults = UncheckedSendable(results)
         let sharedBytes = UncheckedSendable(bytes)
-        forEachChunk(count: chunkCount, threads: threadCount(options.parallelism)) { index in
+        forEachChunk(count: chunkCount, threads: options.parallelism.threadCount) { index in
             sharedResults.value[index] = decodeChunk(
                 sharedBytes.value, from: splits[index], boundary: splits[index + 1],
                 phase: index == 0 ? .prolog : .body, options: options, syncMarks: nil)
@@ -74,23 +74,13 @@ enum DocumentDriver {
         }
     }
 
-    private static func threadCount(_ parallelism: XMLTVOptions.Parallelism) -> Int {
-        switch parallelism {
-        case .serial: 1
-        // More threads than cores would only add contention; this also keeps `.threads(.max)`,
-        // a natural way to write "no limit", from overflowing the chunk arithmetic.
-        case .threads(let n): max(1, min(n, ProcessInfo.processInfo.activeProcessorCount))
-        case .automatic: ProcessInfo.processInfo.activeProcessorCount
-        }
-    }
-
     // MARK: Planning
 
     /// Offsets where chunks start: 0, then the first plausible `<programme` at or after each
     /// equal division, then the end of the buffer.
     static func splitPoints(_ bytes: UnsafeBufferPointer<UInt8>, parallelism: XMLTVOptions.Parallelism) -> [Int] {
         let count = bytes.count
-        let threads = parallelism == .automatic && count < parallelThreshold ? 1 : threadCount(parallelism)
+        let threads = parallelism == .automatic && count < parallelThreshold ? 1 : parallelism.threadCount
         // Several chunks per thread balance the load between performance and efficiency cores.
         let chunkCount = threads == 1 ? 1 : min(threads * 4, max(1, count / minimumChunkSize))
         guard chunkCount > 1, let base = bytes.baseAddress else { return [0, count] }

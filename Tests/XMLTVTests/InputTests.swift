@@ -16,6 +16,17 @@ struct InputTests {
         #expect(try reader.next() != nil)
     }
 
+    /// A declaration of UTF-16 that can be read as ASCII is wrong, not UTF-16: the file is read
+    /// as UTF-8, on every path.
+    @Test func utf16DeclaredInEightBitTextIsUTF8() throws {
+        for name in ["UTF-16", "utf-16le", "UTF-16BE"] {
+            let xml = "<?xml version=\"1.0\" encoding=\"\(name)\"?><tv><channel id=\"é\"><display-name>É</display-name></channel></tv>"
+            let guide = try parse(xml)
+            #expect(guide.report.encoding == .utf8 && guide.channels.map(\.id) == ["é"])
+            #expect(try streamDecode(Array(xml.utf8), chunkSize: 3).report == guide.report)
+        }
+    }
+
     @Test func longDeclarationStillDeclaresTheEncoding() throws {
         let head = "<?xml version=\"1.0\"" + String(repeating: " ", count: 2000) + "encoding=\"ISO-8859-1\"?>"
         let bytes = Array((head + "<tv><programme \(Self.start) channel=\"c\"><title>").utf8) + [0xE9] + Array("</title></programme></tv>".utf8)
@@ -50,6 +61,15 @@ struct InputTests {
         _ = try bytes.withUnsafeBufferPointer { raw throws(XMLTVError) in try GzipInflater.inflateAll(raw, into: &output) }
         // The trailer says 4 GiB; the buffer is only ever one growth step past the hint.
         #expect(output.capacity < 1 << 20)
+    }
+
+    /// The thread limit covers reading the file as well as parsing it.
+    @Test func threadLimitAppliesToFileReads() {
+        let large = DocumentInput.parallelReadThreshold
+        #expect(DocumentInput.readSliceCount(size: large, threads: XMLTVOptions.Parallelism.serial.threadCount) == 1)
+        #expect(DocumentInput.readSliceCount(size: large, threads: XMLTVOptions.Parallelism.threads(2).threadCount) == 2)
+        #expect(DocumentInput.readSliceCount(size: large, threads: 64) == 8)
+        #expect(DocumentInput.readSliceCount(size: large - 1, threads: 64) == 1)
     }
 
     @Test func threadCountIsHonouredWithoutChangingTheResult() throws {

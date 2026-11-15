@@ -48,7 +48,7 @@ struct XMLTVDecoder {
     /// Child counts of the previous programme, used to size the next one's arrays.
     var expectedCounts = ExpectedCounts()
 
-    let namedTimeZones: [String: Int32]
+    let namedTimeZones: [String: Int]
     let channelIDs: Set<String>?
     private let timeWindow: Range<Int64>?
 
@@ -72,8 +72,11 @@ struct XMLTVDecoder {
             policy: options.policy, sampleLimit: options.diagnosticLimit, recordsOffsets: recordsDiagnosticOffsets)
         self.namedTimeZones = options.namedTimeZones
         self.channelIDs = options.channelIDs
-        self.timeWindow = options.timeWindow.map {
-            XMLTVTimestamp.seconds($0.lowerBound, rounding: .down)..<XMLTVTimestamp.seconds($0.upperBound, rounding: .up)
+        // Whole seconds that cover the window. An empty window stays empty: rounding its equal
+        // bounds outwards would make it a second long.
+        self.timeWindow = options.timeWindow.map { window in
+            window.isEmpty ? 0..<0
+                : XMLTVTimestamp.seconds(window.lowerBound, rounding: .down)..<XMLTVTimestamp.seconds(window.upperBound, rounding: .up)
         }
     }
 
@@ -167,7 +170,10 @@ struct XMLTVDecoder {
             } catch where error.kind == .unexpectedEndOfInput && !scanner.isComplete {
                 throw error   // a streaming window: wait for more input
             } catch {
-                return try contentAfterRoot(at: error.kind == .unexpectedEndOfInput ? start : error.byteOffset)
+                // A truncation is reported where the unfinished construct starts, after any
+                // complete comments the scanner skipped, so that a stream that read those in an
+                // earlier call reports the same place.
+                return try contentAfterRoot(at: error.kind == .unexpectedEndOfInput ? scanner.tokenStart : error.byteOffset)
             }
             switch token {
             case .endOfInput:
@@ -227,8 +233,13 @@ struct XMLTVDecoder {
     // MARK: Channel
 
     private mutating func decodeChannel(_ name: ByteRange, isEmpty: Bool) throws(XMLTVError) -> Channel? {
-        guard let idAttribute = scanner.attribute("id") else {
-            try diagnostics.report(.missingAttribute(element: "channel", attribute: "id"), .channelDropped, at: elementStart)
+        // As for a programme's channel: an empty ID can never be matched, so it counts as
+        // missing, and with a channel filter, a channel without one can never be selected, so
+        // it is skipped without a report.
+        guard let idAttribute = scanner.attribute("id"), !idAttribute.value.isEmpty else {
+            if channelIDs == nil {
+                try diagnostics.report(.missingAttribute(element: "channel", attribute: "id"), .channelDropped, at: elementStart)
+            }
             try skipContent(of: name, isEmpty: isEmpty)
             return nil
         }
@@ -302,6 +313,7 @@ struct XMLTVDecoder {
     @inline(__always)
     func isInTimeWindow(start: XMLTVTimestamp, stop: XMLTVTimestamp?) -> Bool {
         guard let timeWindow else { return true }
+        guard !timeWindow.isEmpty else { return false }
         guard start.isTimeZoneKnown, stop?.isTimeZoneKnown ?? true else { return true }
         guard start.secondsSince1970 < timeWindow.upperBound else { return false }
         guard let stop else { return true }
@@ -332,15 +344,15 @@ struct XMLTVDecoder {
             }
             text.beginPieces()
             try text.appendPiece(range, mode: .text, needsDecoding: needsDecoding, in: scanner, diagnostics: &diagnostics)
-            return try remainingTextPieces(from: second, of: name, offset: range.start)
+            return try remainingTextPieces(from: second, of: name)
         default:
             text.beginPieces()
-            return try remainingTextPieces(from: first, of: name, offset: scanner.tokenStart)
+            return try remainingTextPieces(from: first, of: name)
         }
     }
 
     private mutating func remainingTextPieces(
-        from first: XMLToken, of name: ByteRange, offset: Int
+        from first: XMLToken, of name: ByteRange
     ) throws(XMLTVError) -> String {
         var token = first
         while true {
@@ -353,7 +365,7 @@ struct XMLTVDecoder {
                 try skipContent(of: child, isEmpty: childIsEmpty)
             case .endTag(let closing):
                 try expectEndTag(closing, matching: name)
-                return try text.finishPieces(at: offset, diagnostics: &diagnostics)
+                return text.finishPieces()
             case .endOfInput:
                 throw scanner.truncated()
             }

@@ -9,20 +9,31 @@
 /// though that initializer validates the UTF-8 a second time (quickly; it never fails here).
 /// Text in skipped subtrees is not checked: it never becomes a string.
 enum TextValidation {
-    /// Every kind of problem in `bytes` that has one, each once: a forbidden character, and
-    /// invalid UTF-8. ``firstProblem(in:)`` finds the first problem quickly; this slower check
-    /// runs only on text that has one, so that text with both kinds reports both.
-    static func problems(in bytes: UnsafeBufferPointer<UInt8>, first: XMLTVError.Kind) -> [XMLTVError.Kind] {
-        let decoded = String(decoding: bytes, as: UTF8.self)
-        let forbidden = decoded.unicodeScalars.first { scalar in
-            let value = scalar.value
-            return (value < 0x20 && value != 0x09 && value != 0x0A && value != 0x0D) || value == 0xFFFE || value == 0xFFFF
+    /// The first problem of each kind in `bytes`, with its index, in the order they occur: a
+    /// forbidden character, and invalid UTF-8. ``firstProblem(in:)`` finds whether there is a
+    /// problem quickly; this slower scan runs only on text that has one, so that text with both
+    /// kinds reports both, each where it is.
+    static func problems(in bytes: UnsafeBufferPointer<UInt8>) -> [(kind: XMLTVError.Kind, index: Int)] {
+        guard let base = bytes.baseAddress else { return [] }
+        var invalidUTF8: Int?
+        var forbidden: (kind: XMLTVError.Kind, index: Int)?
+        var i = 0
+        while i < bytes.count && (invalidUTF8 == nil || forbidden == nil) {
+            switch scalarStep(base, from: i, until: bytes.count, count: bytes.count) {
+            case .valid:
+                i = bytes.count
+            case .invalidUTF8(let index):
+                if invalidUTF8 == nil { invalidUTF8 = index }
+                i = index &+ 1
+            case .forbidden(let scalar, let index):
+                if forbidden == nil { forbidden = (.invalidCharacter(scalar), index) }
+                // C0 controls are one byte; U+FFFE and U+FFFF are three.
+                i = index &+ (scalar < 0x80 ? 1 : 3)
+            }
         }
-        let isInvalidUTF8 = !decoded.utf8.elementsEqual(bytes)
-        var problems = [first]
-        if case .invalidCharacter = first, isInvalidUTF8 { problems.append(.invalidUTF8) }
-        if first == .invalidUTF8, let forbidden { problems.append(.invalidCharacter(forbidden.value)) }
-        return problems
+        var found = invalidUTF8.map { [(kind: XMLTVError.Kind.invalidUTF8, index: $0)] } ?? []
+        if let forbidden { found.append(forbidden) }
+        return found.sorted { $0.index < $1.index }
     }
 
     /// The first problem in `bytes`, or nil if the text is valid.
@@ -42,68 +53,77 @@ enum TextValidation {
                 continue
             }
             switch scalarStep(base, from: i, until: i &+ 16, count: count) {
-            case .success(let next): i = next
-            case .failure(let problem): return problem.kind
+            case .valid(let next): i = next
+            case .invalidUTF8: return .invalidUTF8
+            case .forbidden(let scalar, _): return .invalidCharacter(scalar)
             }
         }
         switch scalarStep(base, from: i, until: count, count: count) {
-        case .success: return nil
-        case .failure(let problem): return problem.kind
+        case .valid: return nil
+        case .invalidUTF8: return .invalidUTF8
+        case .forbidden(let scalar, _): return .invalidCharacter(scalar)
         }
     }
 
-    struct Problem: Error { var kind: XMLTVError.Kind }
+    /// The outcome of the scalar path. Positions and scalars only, so that it is returned in
+    /// registers: the hot loop of ``firstProblem(in:)`` runs it for every block with a byte
+    /// outside printable ASCII.
+    private enum Step {
+        /// Valid up to this index.
+        case valid(Int)
+        case invalidUTF8(at: Int)
+        case forbidden(UInt32, at: Int)
+    }
 
     /// The scalar path: the well-formed byte sequences of Unicode Table 3-7, plus XML's `Char`
     /// production. Checks sequences starting before `limit` and returns the index after the last
     /// one, which may lie past `limit` when a sequence straddles it.
     private static func scalarStep(
         _ p: UnsafePointer<UInt8>, from start: Int, until limit: Int, count: Int
-    ) -> Result<Int, Problem> {
+    ) -> Step {
         var i = start
         @inline(__always) func continuation(_ index: Int, _ range: ClosedRange<UInt8> = 0x80...0xBF) -> Bool {
             index < count && range.contains(p[index])
         }
-        let invalidUTF8 = Problem(kind: .invalidUTF8)
         while i < limit {
             let lead = p[i]
             switch lead {
             case 0x09, 0x0A, 0x0D, 0x20...0x7F:
                 i &+= 1
             case 0x00...0x1F:
-                return .failure(Problem(kind: .invalidCharacter(UInt32(lead))))
+                return .forbidden(UInt32(lead), at: i)
             case 0xC2...0xDF:
-                guard continuation(i &+ 1) else { return .failure(invalidUTF8) }
+                guard continuation(i &+ 1) else { return .invalidUTF8(at: i) }
                 i &+= 2
             case 0xE0:
-                guard continuation(i &+ 1, 0xA0...0xBF), continuation(i &+ 2) else { return .failure(invalidUTF8) }
+                guard continuation(i &+ 1, 0xA0...0xBF), continuation(i &+ 2) else { return .invalidUTF8(at: i) }
                 i &+= 3
             case 0xE1...0xEC, 0xEE:
-                guard continuation(i &+ 1), continuation(i &+ 2) else { return .failure(invalidUTF8) }
+                guard continuation(i &+ 1), continuation(i &+ 2) else { return .invalidUTF8(at: i) }
                 i &+= 3
             case 0xEF:
-                guard continuation(i &+ 1), continuation(i &+ 2) else { return .failure(invalidUTF8) }
+                guard continuation(i &+ 1), continuation(i &+ 2) else { return .invalidUTF8(at: i) }
                 // U+FFFE and U+FFFF are EF BF BE and EF BF BF.
                 if p[i &+ 1] == 0xBF && p[i &+ 2] >= 0xBE {
-                    return .failure(Problem(kind: .invalidCharacter(0xFFF0 | UInt32(p[i &+ 2] & 0x0F))))
+                    return .forbidden(0xFFF0 | UInt32(p[i &+ 2] & 0x0F), at: i)
                 }
                 i &+= 3
             case 0xED:
-                guard continuation(i &+ 1, 0x80...0x9F), continuation(i &+ 2) else { return .failure(invalidUTF8) }
+                guard continuation(i &+ 1, 0x80...0x9F), continuation(i &+ 2) else { return .invalidUTF8(at: i) }
                 i &+= 3
             case 0xF0:
-                guard continuation(i &+ 1, 0x90...0xBF), continuation(i &+ 2), continuation(i &+ 3) else { return .failure(invalidUTF8) }
+                guard continuation(i &+ 1, 0x90...0xBF), continuation(i &+ 2), continuation(i &+ 3) else { return .invalidUTF8(at: i) }
                 i &+= 4
             case 0xF1...0xF3:
-                guard continuation(i &+ 1), continuation(i &+ 2), continuation(i &+ 3) else { return .failure(invalidUTF8) }
+                guard continuation(i &+ 1), continuation(i &+ 2), continuation(i &+ 3) else { return .invalidUTF8(at: i) }
                 i &+= 4
             case 0xF4:
-                guard continuation(i &+ 1, 0x80...0x8F), continuation(i &+ 2), continuation(i &+ 3) else { return .failure(invalidUTF8) }
+                guard continuation(i &+ 1, 0x80...0x8F), continuation(i &+ 2), continuation(i &+ 3) else { return .invalidUTF8(at: i) }
                 i &+= 4
             default:
-                return .failure(invalidUTF8)
+                return .invalidUTF8(at: i)
             }
         }
-        return .success(i)
+        return .valid(i)
     }
 }

@@ -57,12 +57,13 @@ using `XMLTVDocument` is simpler and faster still.
 
 ## Speed
 
-Apple M4 Max, release build, median of 7 runs. Every figure builds the complete model.
+Apple M4 Max, release build, median of 7 runs. Every figure builds the complete model and
+includes reading the file from the page cache, on one thread in the "One thread" column.
 The Foundation baseline below was run once, as it takes 39 seconds.
 
 | Feed | Size | `XMLTVDocument` | One thread | Keeping 1/64 of channels |
 |---|---:|---:|---:|---:|
-| epgshare01 ALL_SOURCES | 1.93 GB | 442 ms, 4.36 GB/s | 0.56 GB/s | 15.5 GB/s |
+| epgshare01 ALL_SOURCES | 1.93 GB | 442 ms, 4.36 GB/s | 0.53 GB/s | 15.5 GB/s |
 | epgshare01 US2 | 78 MB | 18.2 ms, 4.29 GB/s | 0.56 GB/s | 13.8 GB/s |
 | Plex US | 15.5 MB | 4.5 ms, 3.48 GB/s | 0.59 GB/s | 8.6 GB/s |
 
@@ -128,7 +129,8 @@ The suite includes:
 - streaming tests at chunk sizes from one byte up
 - truncation at every third byte, and random byte mutation
 - a test for each fixed defect, in the suite for the behaviour it protects
-- bounded memory on highly compressible gzip, and errors that stay thrown
+- bounded streaming memory on highly compressible gzip, long padding and oversized records
+- serial, split and streamed parses of mutated documents, compared with each other
 
 Set `XMLTV_CORPUS` to a directory of real `.xml` feeds to run the corpus tests as well.
 

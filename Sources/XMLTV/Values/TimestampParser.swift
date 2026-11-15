@@ -19,7 +19,7 @@ enum TimestampParser {
         case invalid
     }
 
-    static func parse(_ text: UnsafeBufferPointer<UInt8>, namedZones: [String: Int32]) -> Outcome {
+    static func parse(_ text: UnsafeBufferPointer<UInt8>, namedZones: [String: Int]) -> Outcome {
         if let fast = parseCommonForm(text) { return .valid(fast) }
         return parseGeneralForm(text, namedZones: namedZones)
     }
@@ -55,7 +55,7 @@ enum TimestampParser {
         default: return nil
         }
         let local = daysFromCivil(Int64(year), month, day) &* 86_400 &+ Int64(hour &* 3600 &+ minute &* 60 &+ second)
-        return XMLTVTimestamp(secondsSince1970: local &- Int64(offset), utcOffsetSeconds: Int32(offset))
+        return XMLTVTimestamp(secondsSince1970: local &- Int64(offset), offset: Int32(offset))
     }
 
     /// Decodes 8 ASCII digits, first digit in the lowest byte, or returns nil if any byte is not
@@ -83,7 +83,7 @@ enum TimestampParser {
 
     /// Accepts 4, 6, 8, 10, 12 or 14 digits, then optional whitespace and a numeric offset or a
     /// zone name. With no zone, the value is UTC.
-    static func parseGeneralForm(_ text: UnsafeBufferPointer<UInt8>, namedZones: [String: Int32]) -> Outcome {
+    static func parseGeneralForm(_ text: UnsafeBufferPointer<UInt8>, namedZones: [String: Int]) -> Outcome {
         var i = 0, end = text.count
         while i < end && text[i].isXMLWhitespace { i += 1 }
         while end > i && text[end - 1].isXMLWhitespace { end -= 1 }
@@ -133,7 +133,7 @@ enum TimestampParser {
                 guard Self.isZoneName(UnsafeBufferPointer(rebasing: text[i..<end])) else { return .invalid }
                 let name = String(decoding: UnsafeBufferPointer(rebasing: text[i..<end]), as: UTF8.self)
                 if let known = namedZones[name] ?? namedZones[name.uppercased()] {
-                    offset = Int(known)
+                    offset = Int(Int32(clamping: known))
                 } else {
                     unresolvedName = name
                 }
@@ -142,7 +142,7 @@ enum TimestampParser {
 
         let local = daysFromCivil(Int64(year), month, day) * 86_400 + Int64(hour * 3600 + minute * 60 + second)
         let timestamp = XMLTVTimestamp(
-            secondsSince1970: local - Int64(offset), utcOffsetSeconds: Int32(offset),
+            secondsSince1970: local - Int64(offset), offset: Int32(offset),
             precision: precision, isTimeZoneKnown: unresolvedName == nil)
         if let unresolvedName { return .unresolvedZone(timestamp, name: unresolvedName, isNormalized: isNormalized) }
         return isNormalized ? .normalized(timestamp) : .valid(timestamp)
