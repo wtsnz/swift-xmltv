@@ -14,9 +14,13 @@ import Foundation
 /// it in memory, use ``XMLTVReader``.
 ///
 /// The file and `Data` initializers are synchronous and use every core until they return, so
-/// call them off the main actor; see <doc:ChoosingAnEntryPoint#Concurrency>. For channel schedules and what is on
-/// now, build an ``XMLTVSchedule`` from the document.
-public struct XMLTVDocument: Sendable {
+/// call them off the main actor; see <doc:ChoosingAnEntryPoint#Concurrency>. For channel
+/// schedules and what is on now, build an ``XMLTVSchedule`` from the document.
+///
+/// Documents are equal when their info, records and reports are, so comparing the old and new
+/// documents tells whether a refresh changed anything. Equal documents are compared record by
+/// record, so for a large guide, compare off the main actor.
+public struct XMLTVDocument: Sendable, Hashable {
     /// The attributes of the `<tv>` root.
     public var info: TVInfo
     /// Channels in document order.
@@ -46,7 +50,8 @@ public struct XMLTVDocument: Sendable {
     /// Collects a document arriving as a sequence of byte chunks, such as a download, as the
     /// chunks arrive. The parse is serial; see ``XMLTVItems`` to handle records one at a time.
     ///
-    /// Errors from the source are rethrown unchanged. Parse errors are ``XMLTVError``.
+    /// Errors from the source are rethrown unchanged. Parse errors are ``XMLTVError``. A cancelled
+    /// task gets `CancellationError`, not the part of the guide read so far.
     public init<Chunks: AsyncSequence>(
         chunks: Chunks, options: XMLTVOptions = XMLTVOptions()
     ) async throws where Chunks.Element: ContiguousBytes {

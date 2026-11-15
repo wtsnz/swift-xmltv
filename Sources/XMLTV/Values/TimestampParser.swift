@@ -54,7 +54,7 @@ enum TimestampParser {
         case UInt8(ascii: "-"): offset = -(offsetHours &* 3600 &+ offsetMinutes &* 60)
         default: return nil
         }
-        let local = Int64(daysFromCivil(year, month, day)) &* 86_400 &+ Int64(hour &* 3600 &+ minute &* 60 &+ second)
+        let local = daysFromCivil(Int64(year), month, day) &* 86_400 &+ Int64(hour &* 3600 &+ minute &* 60 &+ second)
         return XMLTVTimestamp(secondsSince1970: local &- Int64(offset), utcOffsetSeconds: Int32(offset))
     }
 
@@ -140,7 +140,7 @@ enum TimestampParser {
             }
         }
 
-        let local = Int64(daysFromCivil(year, month, day)) * 86_400 + Int64(hour * 3600 + minute * 60 + second)
+        let local = daysFromCivil(Int64(year), month, day) * 86_400 + Int64(hour * 3600 + minute * 60 + second)
         let timestamp = XMLTVTimestamp(
             secondsSince1970: local - Int64(offset), utcOffsetSeconds: Int32(offset),
             precision: precision, isTimeZoneKnown: unresolvedName == nil)
@@ -162,27 +162,29 @@ enum TimestampParser {
 
     // MARK: Civil calendar
 
-    /// Days from 1970-01-01 to the given proleptic Gregorian date (Howard Hinnant).
+    /// Days from 1970-01-01 to the given proleptic Gregorian date (Howard Hinnant). Years are
+    /// `Int64` so that every year of an `Int64` instant fits, on 32-bit platforms too.
     @inline(__always)
-    static func daysFromCivil(_ year: Int, _ month: Int, _ day: Int) -> Int {
+    static func daysFromCivil(_ year: Int64, _ month: Int, _ day: Int) -> Int64 {
         let y = month <= 2 ? year &- 1 : year
         let era = (y >= 0 ? y : y &- 399) / 400
         let yearOfEra = y &- era &* 400
-        let dayOfYear = (153 &* (month > 2 ? month &- 3 : month &+ 9) &+ 2) / 5 &+ day &- 1
+        let shiftedMonth: Int = month > 2 ? month &- 3 : month &+ 9   // March is 0
+        let dayOfYear = Int64((153 &* shiftedMonth &+ 2) / 5 &+ day &- 1)
         let dayOfEra = yearOfEra &* 365 &+ yearOfEra / 4 &- yearOfEra / 100 &+ dayOfYear
         return era &* 146_097 &+ dayOfEra &- 719_468
     }
 
     /// The proleptic Gregorian date `days` after 1970-01-01 (Howard Hinnant). The inverse of
     /// ``daysFromCivil(_:_:_:)``.
-    static func civilFromDays(_ days: Int) -> (year: Int, month: Int, day: Int) {
+    static func civilFromDays(_ days: Int64) -> (year: Int64, month: Int, day: Int) {
         let z = days + 719_468
         let era = (z >= 0 ? z : z - 146_096) / 146_097
         let dayOfEra = z - era * 146_097
         let yearOfEra = (dayOfEra - dayOfEra / 1460 + dayOfEra / 36_524 - dayOfEra / 146_096) / 365
         let dayOfYear = dayOfEra - (365 * yearOfEra + yearOfEra / 4 - yearOfEra / 100)
-        let mp = (5 * dayOfYear + 2) / 153
-        let day = dayOfYear - (153 * mp + 2) / 5 + 1
+        let mp = Int((5 * dayOfYear + 2) / 153)
+        let day = Int(dayOfYear) - (153 * mp + 2) / 5 + 1
         let month = mp < 10 ? mp + 3 : mp - 9
         return (yearOfEra + era * 400 + (month <= 2 ? 1 : 0), month, day)
     }

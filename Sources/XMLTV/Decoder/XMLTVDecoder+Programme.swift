@@ -4,7 +4,7 @@ extension XMLTVDecoder {
     mutating func decodeProgramme(_ name: ByteRange, isEmpty: Bool) throws(XMLTVError) -> Programme? {
         // Read every attribute before the first child token replaces them.
         var channelAttribute: RawAttribute?, startAttribute: RawAttribute?, stopAttribute: RawAttribute?
-        var rareAttributes: [RawAttribute] = []
+        var hasRareAttributes = false
         // A repeated attribute is not an error here, but only its first occurrence is used.
         for index in 0..<scanner.attributeCount {
             let attribute = scanner.attribute(at: index)
@@ -12,7 +12,7 @@ extension XMLTVDecoder {
             if scanner.bytes(attributeName, equal: "start") { if startAttribute == nil { startAttribute = attribute } }
             else if scanner.bytes(attributeName, equal: "stop") { if stopAttribute == nil { stopAttribute = attribute } }
             else if scanner.bytes(attributeName, equal: "channel") { if channelAttribute == nil { channelAttribute = attribute } }
-            else { rareAttributes.append(attribute) }
+            else { hasRareAttributes = true }
         }
 
         // Selection runs before validation, so a programme on a channel the caller excluded is
@@ -55,8 +55,8 @@ extension XMLTVDecoder {
         var programme = Programme(channelID: channelID, start: start, stop: stop)
         var details = Programme.Details.Fields()
         var hasDetails = false
-        if !rareAttributes.isEmpty {
-            hasDetails = try decodeRareAttributes(rareAttributes, into: &details)
+        if hasRareAttributes {
+            hasDetails = try decodeRareAttributes(into: &details)
         }
         if !isEmpty {
             try decodeChildren(of: name, into: &programme, details: &details, hasDetails: &hasDetails)
@@ -69,28 +69,24 @@ extension XMLTVDecoder {
         return programme
     }
 
-    private mutating func decodeRareAttributes(
-        _ attributes: [RawAttribute], into details: inout Programme.Details.Fields
-    ) throws(XMLTVError) -> Bool {
-        var found = false
-        // In reverse, so that the first occurrence of a repeated attribute is the one kept.
-        for attribute in attributes.reversed() {
-            let name = attribute.name
-            if scanner.bytes(name, equal: "pdc-start") { details.pdcStart = try timestamp(attribute); found = true }
-            else if scanner.bytes(name, equal: "vps-start") { details.vpsStart = try timestamp(attribute); found = true }
-            else if scanner.bytes(name, equal: "showview") { details.showView = try string(attribute); found = true }
-            else if scanner.bytes(name, equal: "videoplus") { details.videoPlus = try string(attribute); found = true }
-            else if scanner.bytes(name, equal: "clumpidx") {
-                if let clump = try clump(attribute) { details.clump = clump; found = true }
-            }
-        }
-        return found
+    /// The start tag's attributes are still current: nothing since it was read has advanced
+    /// the scanner.
+    private mutating func decodeRareAttributes(into details: inout Programme.Details.Fields) throws(XMLTVError) -> Bool {
+        if let attribute = scanner.attribute("pdc-start") { details.pdcStart = try timestamp(attribute) }
+        if let attribute = scanner.attribute("vps-start") { details.vpsStart = try timestamp(attribute) }
+        details.showView = try optionalString("showview")
+        details.videoPlus = try optionalString("videoplus")
+        if let attribute = scanner.attribute("clumpidx"), let clump = try clump(attribute) { details.clump = clump }
+        return details.pdcStart != nil || details.vpsStart != nil || details.showView != nil
+            || details.videoPlus != nil || details.clump != .single
     }
 
     private mutating func decodeChildren(
         of name: ByteRange, into programme: inout Programme,
         details: inout Programme.Details.Fields, hasDetails: inout Bool
     ) throws(XMLTVError) {
+        // An invalid `<length>` decodes as nil but still counts as the first.
+        var hasLength = false
         while true {
             switch try scanner.next() {
             case .startTag(let child, let isEmpty):
@@ -135,7 +131,9 @@ extension XMLTVDecoder {
                     let language = try localizedText(child, isEmpty: isEmpty)
                     if details.originalLanguage == nil { details.originalLanguage = language; hasDetails = true }
                 case .length:
-                    if let length = try length(child, isEmpty: isEmpty), details.length == nil { details.length = length; hasDetails = true }
+                    let length = try length(child, isEmpty: isEmpty)
+                    if !hasLength, let length { details.length = length; hasDetails = true }
+                    hasLength = true
                 case .url:
                     details.urls.append(try link(child, isEmpty: isEmpty)); hasDetails = true
                 case .country:
@@ -215,7 +213,7 @@ extension XMLTVDecoder {
                     case "yes": credit.isGuest = true
                     case "no": break
                     default:
-                        try diagnostics.report(.invalidValue(element: "actor", value: value), .assumedDefault, at: guest.value.start)
+                        try diagnostics.report(.invalidValue(element: "actor", attribute: "guest", value: value), .assumedDefault, at: guest.value.start)
                     }
                 }
             }
@@ -294,7 +292,9 @@ extension XMLTVDecoder {
                 switch try scanner.next() {
                 case .startTag(let child, let childIsEmpty):
                     switch XMLTVElement(scanner.pointer(to: child)) {
-                    case .value: value = try textContent(of: child, isEmpty: childIsEmpty)
+                    case .value:
+                        let text = try textContent(of: child, isEmpty: childIsEmpty)
+                        if value == nil { value = text }
                     case .icon: if let icon = try icon(child, isEmpty: childIsEmpty) { icons.append(icon) }
                     default: try skipContent(of: child, isEmpty: childIsEmpty)
                     }
@@ -357,23 +357,43 @@ extension XMLTVDecoder {
             if byte == UInt8(ascii: ".") { points += 1; return points <= 1 }
             return byte >= UInt8(ascii: "0") && byte <= UInt8(ascii: "9")
         }
-        guard let unitSeconds, isDecimal, let amount = Double(value), amount >= 0, amount * unitSeconds <= Self.maximumLength else {
-            let detail = units.map { "\(value) \($0)" } ?? "missing units"
-            try diagnostics.report(.invalidValue(element: "length", value: detail), .valueDropped, at: start)
+        guard let units else {
+            try diagnostics.report(.missingAttribute(element: "length", attribute: "units"), .valueDropped, at: start)
+            return nil
+        }
+        guard let unitSeconds else {
+            try diagnostics.report(.invalidValue(element: "length", attribute: "units", value: units), .valueDropped, at: start)
+            return nil
+        }
+        guard isDecimal, let amount = Double(value), amount >= 0, amount * unitSeconds <= Self.maximumLength else {
+            try diagnostics.report(.invalidValue(element: "length", attribute: nil, value: value), .valueDropped, at: start)
             return nil
         }
         return .seconds(amount * unitSeconds)
     }
 
+    // Each child of `<video>`, `<audio>` and `<subtitles>` is single-valued, so the first is
+    // kept. A `seen` flag marks a yes/no child that was invalid and decoded as nil.
+
     private mutating func video(_ name: ByteRange, isEmpty: Bool) throws(XMLTVError) -> Programme.Video {
         var video = Programme.Video()
+        var seenPresent = false, seenColour = false
         try forEachChild(of: name, isEmpty: isEmpty) { decoder, tag, child, childIsEmpty throws(XMLTVError) in
             switch tag {
-            case .present: video.isPresent = try decoder.yesNo(child, isEmpty: childIsEmpty)
-            case .colour: video.isColour = try decoder.yesNo(child, isEmpty: childIsEmpty)
-            case .aspect: video.aspect = try decoder.textContent(of: child, isEmpty: childIsEmpty)
-            case .quality: video.quality = try decoder.textContent(of: child, isEmpty: childIsEmpty)
-            default: try decoder.skipContent(of: child, isEmpty: childIsEmpty)
+            case .present:
+                let value = try decoder.yesNo(child, isEmpty: childIsEmpty)
+                if !seenPresent { video.isPresent = value; seenPresent = true }
+            case .colour:
+                let value = try decoder.yesNo(child, isEmpty: childIsEmpty)
+                if !seenColour { video.isColour = value; seenColour = true }
+            case .aspect:
+                let value = try decoder.textContent(of: child, isEmpty: childIsEmpty)
+                if video.aspect == nil { video.aspect = value }
+            case .quality:
+                let value = try decoder.textContent(of: child, isEmpty: childIsEmpty)
+                if video.quality == nil { video.quality = value }
+            default:
+                try decoder.skipContent(of: child, isEmpty: childIsEmpty)
             }
         }
         return video
@@ -381,11 +401,17 @@ extension XMLTVDecoder {
 
     private mutating func audio(_ name: ByteRange, isEmpty: Bool) throws(XMLTVError) -> Programme.Audio {
         var audio = Programme.Audio()
+        var seenPresent = false
         try forEachChild(of: name, isEmpty: isEmpty) { decoder, tag, child, childIsEmpty throws(XMLTVError) in
             switch tag {
-            case .present: audio.isPresent = try decoder.yesNo(child, isEmpty: childIsEmpty)
-            case .stereo: audio.stereo = try decoder.textContent(of: child, isEmpty: childIsEmpty)
-            default: try decoder.skipContent(of: child, isEmpty: childIsEmpty)
+            case .present:
+                let value = try decoder.yesNo(child, isEmpty: childIsEmpty)
+                if !seenPresent { audio.isPresent = value; seenPresent = true }
+            case .stereo:
+                let value = try decoder.textContent(of: child, isEmpty: childIsEmpty)
+                if audio.stereo == nil { audio.stereo = value }
+            default:
+                try decoder.skipContent(of: child, isEmpty: childIsEmpty)
             }
         }
         return audio
@@ -395,7 +421,8 @@ extension XMLTVDecoder {
         var track = Programme.SubtitleTrack(type: try scanner.attribute("type").map { attribute throws(XMLTVError) in try string(attribute) })
         try forEachChild(of: name, isEmpty: isEmpty) { decoder, tag, child, childIsEmpty throws(XMLTVError) in
             if tag == .language {
-                track.language = try decoder.localizedText(child, isEmpty: childIsEmpty)
+                let language = try decoder.localizedText(child, isEmpty: childIsEmpty)
+                if track.language == nil { track.language = language }
             } else {
                 try decoder.skipContent(of: child, isEmpty: childIsEmpty)
             }
@@ -405,14 +432,10 @@ extension XMLTVDecoder {
 
     private mutating func review(_ name: ByteRange, isEmpty: Bool) throws(XMLTVError) -> Programme.Review? {
         let start = scanner.tokenStart
-        var review = Programme.Review("", type: "")
-        for index in 0..<scanner.attributeCount {
-            let attribute = scanner.attribute(at: index)
-            if scanner.bytes(attribute.name, equal: "type") { review.type = try string(attribute) }
-            else if scanner.bytes(attribute.name, equal: "source") { review.source = try string(attribute) }
-            else if scanner.bytes(attribute.name, equal: "reviewer") { review.reviewer = try string(attribute) }
-            else if scanner.bytes(attribute.name, equal: "lang") { review.language = try string(attribute) }
-        }
+        var review = Programme.Review("", type: try optionalString("type") ?? "")
+        review.source = try optionalString("source")
+        review.reviewer = try optionalString("reviewer")
+        review.language = try optionalString("lang")
         review.value = try textContent(of: name, isEmpty: isEmpty)
         if review.type.isEmpty {
             try diagnostics.report(.missingAttribute(element: "review", attribute: "type"), .valueDropped, at: start)
@@ -427,7 +450,7 @@ extension XMLTVDecoder {
         if parts.count == 2, let index = Int(parts[0]), let count = Int(parts[1]), index >= 0, count > index {
             return Programme.Clump(index: index, count: count)
         }
-        try diagnostics.report(.invalidValue(element: "clumpidx", value: value), .valueDropped, at: attribute.value.start)
+        try diagnostics.report(.invalidValue(element: "programme", attribute: "clumpidx", value: value), .valueDropped, at: attribute.value.start)
         return nil
     }
 
@@ -474,7 +497,7 @@ extension XMLTVDecoder {
         case "yes": return true
         case "no": return false
         default:
-            try diagnostics.report(.invalidValue(element: scanner.string(name), value: value), .valueDropped, at: start)
+            try diagnostics.report(.invalidValue(element: scanner.string(name), attribute: nil, value: value), .valueDropped, at: start)
             return nil
         }
     }

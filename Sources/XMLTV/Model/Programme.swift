@@ -91,7 +91,8 @@ public struct Programme: Sendable, Hashable {
     /// The scheduled running time, if both ends are known. Nil when `stop` is before `start`.
     public var duration: Duration? {
         guard let stop, stop.secondsSince1970 >= start.secondsSince1970 else { return nil }
-        return .seconds(stop.secondsSince1970 - start.secondsSince1970)
+        // `Duration` has room for the difference of any two `Int64` second counts.
+        return .seconds(stop.secondsSince1970) - .seconds(start.secondsSince1970)
     }
 
     /// The start and stop as dates, or nil without a `stop`, or when `stop` is before `start`.

@@ -148,10 +148,10 @@ enum ByteSearch {
     }
 
     /// The index of the first byte of the line containing `offset`: just after the nearest LF or
-    /// CR before it, or `floor` when there is none at or after `floor`.
-    static func lineStart(of offset: Int, in base: UnsafePointer<UInt8>, floor: Int = 0) -> Int {
+    /// CR before it, or 0 when there is none.
+    static func lineStart(of offset: Int, in base: UnsafePointer<UInt8>) -> Int {
         var i = offset
-        while i > floor && base[i &- 1] != 0x0A && base[i &- 1] != 0x0D { i &-= 1 }
+        while i > 0 && base[i &- 1] != 0x0A && base[i &- 1] != 0x0D { i &-= 1 }
         return i
     }
 }

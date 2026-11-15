@@ -27,9 +27,11 @@ become values.
 ### A purpose-built XML scanner
 
 The library reads XML with its own scanner, not `XMLParser` or libxml2. `XMLParser` reaches
-0.05 GB/s on these feeds. libxml2's SAX2 interface reaches 0.5 GB/s just counting elements,
-before any model is built. That is a ceiling for any parser built on it, and this library goes
-nearly nine times faster while building the full model.
+0.05 GB/s on these feeds. libxml2's SAX2 interface reaches 0.55 GB/s on one thread just
+counting elements (`Benchmarks/libxml2-sax-count.c`). A parser built on it does that work and
+then builds the model, so it is slower on one thread than this library, which builds the whole
+model at about 0.56 GB/s. Using more cores would need the same speculative splitting as here, on top
+of an interface not designed for it.
 
 The cost is generality. The scanner handles the XML that XMLTV uses and checks it for
 well-formedness, but it does not expand DTD-declared entities, resolve namespaces or read
@@ -111,16 +113,19 @@ reader's 1 MiB reads, a few hundredths of a percent of the bytes are decoded twi
 
 ### Deduplicating strings, including descriptions
 
-Each worker keeps a table of the strings it has made, keyed by their bytes. The first plan
+Each chunk of the input is decoded with a table of the strings made from it, keyed by their
+bytes. The first plan
 covered only short vocabulary: channel IDs, languages, categories. Measurement showed that
 descriptions repeat too, in reruns and looping channels. Interning everything up to 4 KiB made
 the 1.93 GB parse about 10% faster and lowered peak memory by about 6%.
 
-A whole-document parse keeps up to 64 MiB of keys, since its result holds every string anyway.
-The streaming entry points keep 4 MiB. With 64 MiB, a reader of the 1.93 GB feed peaked at
+In a whole-document parse, each chunk's table keeps up to 64 MiB of keys, since the result holds
+every string anyway. The streaming entry points keep 4 MiB. A full table stops adding strings
+and keeps the ones it has. It never evicts, which keeps it a plain open-addressed array; on a
+feed grouped by channel, strings first seen late in the file are then made anew each time. With 64 MiB, a reader of the 1.93 GB feed peaked at
 330 MiB of memory; with 4 MiB it peaks at 40 MiB, at the same speed.
 
-Each worker has its own table, so no locks are needed. Sharing strings across cores would turn
+Each chunk has its own table, so no locks are needed. Sharing strings across cores would turn
 every retain of a popular string into contended atomic traffic. Strings of 15 bytes or fewer
 are stored inline in `String` and never allocate, so they skip the table. A value that needed
 repair, such as one with invalid UTF-8, is never cached, so every occurrence reports its own
@@ -205,8 +210,9 @@ honestly: the channel, the start instant, and the entry's position among those t
 that instant. Exact duplicates are dropped first, so the position separates the members of a
 clump and overlapping records, and the same programme keeps its ID when a newer copy of the
 feed is parsed. The one weakness is order: if a feed swaps two programmes that start together,
-their IDs swap. No scheme avoids that without an identifier in the feed. A position in the document, the other candidate, changes whenever an earlier
-programme is added or removed, which happens on every refresh.
+their IDs swap. No scheme avoids that without an identifier in the feed. A position in the
+document, the other candidate, changes whenever an earlier programme is added or removed, which
+happens on every refresh.
 
 ### A schedule, not inferred stop times
 
@@ -220,7 +226,8 @@ record of the source.
 ### What was left out, and why
 
 - **DTD entities, namespaces and XML 1.1.** No feed uses them, and supporting them would slow
-  every other feed.
+  every other feed. The XML declaration is read for its encoding; its version is not checked,
+  and a document that declares 1.1 is parsed by the XML 1.0 rules.
 - **More encodings,** for example through iconv. Each would add a platform dependency to serve
   feeds that have not been seen in practice.
 - **Keeping unknown elements.** They are skipped. Keeping them would need a generic tree type in

@@ -22,10 +22,12 @@ field, unless the column says otherwise.
 For comparison, on the 1.93 GB feed:
 - Foundation's `XMLParser`, with a delegate building only the common fields, runs at
   0.05 GB/s, taking 39 seconds.
-- libxml2's SAX2 interface runs at 0.49 GB/s doing nothing but counting elements.
+- libxml2's SAX2 interface runs at 0.55 GB/s on one thread, doing nothing but counting
+  elements. `Benchmarks/libxml2-sax-count.c` is the program; its comment has the build line.
 
-The library is about 88 times faster than the first while doing more work, and 8.9 times faster
-than the second while building the whole model.
+The library is about 88 times faster than the first while doing more work. On one thread it
+builds the whole model at about the speed the second counts elements, and across cores it is 8
+times faster.
 
 All figures are for release builds. A debug build of an app runs the parser unoptimised, and
 the serial paths, ``XMLTVReader`` and ``XMLTVItems``, slow to about 1 MB/s. Measure in release.
@@ -87,8 +89,8 @@ trade-offs.
   element, reading tokens directly. There are no callbacks or events between them.
 - **Strings are made once.** Text is trimmed by moving offsets, decoded only if the search
   flagged it, and validated by a specialised checker.
-- **Repeated strings are shared.** Each worker keeps a hash table of the strings it has made, up
-  to 4 KiB long. EPG text repeats constantly: channel IDs, categories, ratings, credit names,
+- **Repeated strings are shared.** Each chunk of the parse keeps a hash table of the strings it
+  has made, up to 4 KiB long. EPG text repeats constantly: channel IDs, categories, ratings, credit names,
   episodic titles, and descriptions of reruns. A repeat costs a hash and a compare, with no
   allocation.
 - **Arrays sized from the previous programme.** Feeds are uniform, so a programme's ratings or

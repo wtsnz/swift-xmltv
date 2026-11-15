@@ -19,7 +19,8 @@ for channelID in schedule.channelIDs {
 
 Swift 6.2.3 or later. macOS 15, iOS 18, tvOS 18, watchOS 11, visionOS 2, and Linux, where the
 test suite passes with Swift 6.2.3; `XMLTVItems(bytes:)` with `URLSession.AsyncBytes` is
-Apple-only, because Linux Foundation lacks it. No dependencies beyond the system zlib.
+Apple-only, because Linux Foundation lacks it. No dependencies beyond the system zlib; on
+Linux, install its headers first (`zlib1g-dev` on Debian and Ubuntu, `zlib-devel` on Fedora).
 
 ```swift
 .package(url: "https://github.com/wtsnz/swift-xmltv.git", .upToNextMinor(from: "0.1.0"))
@@ -39,7 +40,7 @@ let guide = try XMLTVDocument(contentsOf: url)
 // Only some channels. Other programmes are skipped without being decoded.
 let mine = try XMLTVDocument(contentsOf: url, options: XMLTVOptions(channelIDs: ["BBC.One.uk", "ITV1.uk"]))
 
-// One record at a time, in a few tens of megabytes, however large the file.
+// One record at a time, in a few tens of megabytes, however large the file, gzipped or not.
 var reader = try XMLTVReader(contentsOf: url)
 while let item = try reader.next() { … }
 
@@ -51,8 +52,8 @@ if items.report?.isTruncated == true { … }               // the download was c
 ```
 
 All three produce identical records and reports. The tests check this at chunk sizes from one
-byte up, in lenient and strict mode. For a guide on the network, downloading to a file and using `XMLTVDocument` is
-simpler and faster still.
+byte up, in lenient and strict mode. For a guide on the network, downloading to a file and
+using `XMLTVDocument` is simpler and faster still.
 
 ## Speed
 
@@ -66,14 +67,15 @@ The Foundation baseline below was run once, as it takes 39 seconds.
 | Plex US | 15.5 MB | 4.5 ms, 3.48 GB/s | 0.59 GB/s | 8.6 GB/s |
 
 On the 1.93 GB feed, Foundation's `XMLParser` runs at 0.05 GB/s while building fewer fields, so
-this library is about 88 times faster. libxml2's SAX interface runs at 0.49 GB/s while doing
-nothing but counting elements. More measurements, and what makes it fast, are in
+this library is about 88 times faster. libxml2's SAX2 interface, counting elements and building
+nothing, runs at 0.55 GB/s on one thread: about the speed of this library on one thread while it
+builds the whole model. More measurements, and what makes it fast, are in
 [Performance](Sources/XMLTV/XMLTV.docc/Performance.md).
 
 ## Behaviour in brief
 
-- **Broken markup throws.** A mismatched end tag, an unclosed quote or a root other than `<tv>`
-  is fatal, in every mode and in skipped content too. Guessing past damaged markup produces data
+- **Broken markup throws.** A mismatched end tag, a raw `<` in an attribute value or a root
+  other than `<tv>` is fatal, in every mode and in skipped content too. Guessing past damaged markup produces data
   that looks right and isn't.
 - **Bad content is recovered by default.** Minute-60 timestamps, `<rating>12</rating>` with no
   `<value>`, invalid UTF-8, missing attributes and cut-off downloads are handled by fixed rules.
@@ -84,8 +86,9 @@ nothing but counting elements. More measurements, and what makes it fast, are in
   offset and the precision, so `2024` stays distinct from midnight on 1 January. Ambiguous zone
   names such as `IST` are never guessed.
 - **The data stays what the feed said.** Missing stop times are inferred, and exact duplicates
-  dropped, by `XMLTVSchedule`, not written into the programmes. `Programme` is neither `Identifiable` nor `Codable`, because
-  feeds give broadcasts no identity and the downloaded file is the better cache.
+  dropped, by `XMLTVSchedule`, not written into the programmes. `Programme` is neither
+  `Identifiable` nor `Codable`, because feeds give broadcasts no identity and the downloaded
+  file is the better cache.
 - **Encodings and compression are automatic.** UTF-8, UTF-16, ISO-8859-1, ISO-8859-15,
   Windows-1252, and gzip, detected from the bytes.
 - **Some XML features are unsupported.** DTD-declared entities, namespaces, XML 1.1 and other
@@ -124,6 +127,13 @@ The suite includes:
 - parallel-equals-serial tests on a document built to defeat the parallel splitter
 - streaming tests at chunk sizes from one byte up
 - truncation at every third byte, and random byte mutation
-- a regression test for each defect found in code review
+- a test for each fixed defect, in the suite for the behaviour it protects
+- bounded memory on highly compressible gzip, and errors that stay thrown
 
 Set `XMLTV_CORPUS` to a directory of real `.xml` feeds to run the corpus tests as well.
+
+## License
+
+MIT; see [LICENSE](LICENSE). The test fixtures named `upstream_*` come from the XMLTV project
+and are GPL-2.0; [their notice](Tests/XMLTVTests/Fixtures/NOTICE.md) has the details. They are
+test data only and are not part of the library.

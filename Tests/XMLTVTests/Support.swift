@@ -1,4 +1,5 @@
 import Foundation
+import Testing
 @testable import XMLTV
 
 enum Fixtures {
@@ -113,4 +114,62 @@ extension XMLTVDocument {
 
 func sortedByKind(_ items: [XMLTVItem]) -> [XMLTVItem] {
     items.filter { if case .channel = $0 { true } else { false } } + items.filter { if case .programme = $0 { true } else { false } }
+}
+
+/// Compresses `text` with gzip(1).
+func gzip(_ text: String) throws -> Data {
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("xmltv-\(UUID()).xml")
+    try Data(text.utf8).write(to: url)
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/gzip")
+    process.arguments = ["-f", url.path]
+    try process.run()
+    process.waitUntilExit()
+    defer { try? FileManager.default.removeItem(atPath: url.path + ".gz") }
+    return try Data(contentsOf: URL(fileURLWithPath: url.path + ".gz"))
+}
+
+/// The byte offset of the first occurrence of `needle` in `text`.
+func offset(of needle: String, in text: String) -> Int {
+    let haystack = Array(text.utf8), pattern = Array(needle.utf8)
+    return (0...(haystack.count - pattern.count)).first { Array(haystack[$0..<($0 + pattern.count)]) == pattern }!
+}
+
+/// `data` as a stream of chunks of `size` bytes.
+func chunks(_ data: Data, size: Int) -> AsyncStream<Data> {
+    AsyncStream { continuation in
+        var offset = 0
+        while offset < data.count {
+            let end = min(data.count, offset + size)
+            continuation.yield(data.subdata(in: offset..<end))
+            offset = end
+        }
+        continuation.finish()
+    }
+}
+
+/// The report of a serial parse, a parse split at every given offset, and streams at several
+/// chunk sizes must all be equal. Returns the serial result.
+@discardableResult
+func expectSamePaths(_ xml: String, options: XMLTVOptions = XMLTVOptions(), splits: [Int] = [],
+                     chunkSizes: [Int] = [1, 2, 3, 7, 64, 4096], sourceLocation: SourceLocation = #_sourceLocation) throws -> DocumentDriver.Output {
+    try expectSamePaths(bytes: Array(xml.utf8), options: options, splits: splits, chunkSizes: chunkSizes, sourceLocation: sourceLocation)
+}
+
+@discardableResult
+func expectSamePaths(bytes: [UInt8], options: XMLTVOptions = XMLTVOptions(), splits: [Int] = [],
+                     chunkSizes: [Int] = [1, 2, 3, 7, 64, 4096], sourceLocation: SourceLocation = #_sourceLocation) throws -> DocumentDriver.Output {
+    let serial = try parse(bytes, splits: [], options: options)
+    for split in splits {
+        let parallel = try parse(bytes, splits: [split], options: options)
+        #expect(parallel.programmes == serial.programmes, "split \(split)", sourceLocation: sourceLocation)
+        #expect(parallel.report == serial.report, "split \(split)", sourceLocation: sourceLocation)
+    }
+    for chunkSize in chunkSizes {
+        let streamed = try streamDecode(bytes, chunkSize: chunkSize, options: options)
+        #expect(sortedByKind(streamed.items) == serial.channels.map(XMLTVItem.channel) + serial.programmes.map(XMLTVItem.programme),
+                "chunk \(chunkSize)", sourceLocation: sourceLocation)
+        #expect(streamed.report == serial.report, "chunk \(chunkSize)", sourceLocation: sourceLocation)
+    }
+    return serial
 }

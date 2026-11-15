@@ -14,7 +14,7 @@ is available.
 |---|---|---|---|
 | Input | file, `Data`, or chunks | file, `Data` | `AsyncSequence` of byte chunks or bytes |
 | Cores | all, for files and `Data` of 1 MiB or more; one for chunks | one | one |
-| Memory | the whole result, plus the input | bounded: a 1 MiB read buffer, a 4 MiB string cache and one record | bounded, as for the reader, plus unread chunks |
+| Memory | the whole result, plus the input | bounded: a 1 MiB read buffer, up to 1 MiB of decompressed gzip, a 4 MiB string table and one record | bounded, as for the reader, plus unread chunks |
 | First record | after the whole parse | immediately | as soon as its bytes arrive |
 
 For a guide on the network, download it to a file and use ``XMLTVDocument``, unless you need
@@ -57,9 +57,11 @@ while let item = try reader.next() {
 print(reader.report.diagnosticCount, "problems recovered")
 ```
 
-Peak memory stays small however large the file: about 40 MiB for the whole process while
-reading the 1.93 GB feed, against about 5 GB for ``XMLTVDocument``. Most of it is a cache of
-recent strings, which makes repeated text cheap and is capped at 4 MiB of keys.
+Peak memory stays small however large the file, and however well it compresses: about 40 MiB
+for the whole process while reading the 1.93 GB feed, plain or gzipped, against about 5 GB for
+``XMLTVDocument``. Gzip input is decompressed 1 MiB at a time, as the reader needs it. Most of
+the memory is a table of strings already made, which makes repeated text cheap. It holds the
+first 4 MiB of distinct strings and then stops growing.
 
 A reader is a single pass over its input, so it is noncopyable: a copy would be a second owner
 taking records from the same cursor. The compiler enforces this, which means a reader is held
@@ -121,7 +123,9 @@ has the report so far, and its ``XMLTVReport/inputByteCount`` divided by the dow
 expected length gives progress.
 
 Errors thrown by the source come out of the loop unchanged, so a network failure stays a
-network failure and is not reported as bad XML. To collect everything instead of handling
+network failure and is not reported as bad XML. Cancelling the task throws `CancellationError`,
+even from a source such as `AsyncStream` that ends quietly when cancelled, so a cancelled
+download is never mistaken for a cut-off guide. To collect everything instead of handling
 records one by one, use ``XMLTVDocument/init(chunks:options:)``.
 
 #### Speed and memory
@@ -133,7 +137,10 @@ and several GB/s for ``XMLTVDocument``. A network is usually slower than all of 
 fastest result, download to a file.
 
 Iteration is pull-driven, with no background task. Each call to `next()` decodes up to the next
-record and reads more chunks only when it has to. Memory stays bounded as long as the source
+record and reads more chunks only when it has to. Decoding runs on the caller's actor: a loop on
+the main actor parses on the main thread, in record-sized steps between suspensions. That is
+fine in a release build, but a debug build parses at about 1 MB/s, so a large import from the
+main actor blocks it there; iterate in a `@concurrent` function instead. Memory stays bounded as long as the source
 also waits to be asked, as `URLSession.AsyncBytes` does. An `AsyncStream` that a delegate feeds
 with `Data` buffers whatever it is given, so a slow consumer makes it grow. Do not give such a
 stream a dropping buffering policy: a dropped chunk is lost XML.
@@ -187,7 +194,9 @@ actor Importer {
 let importer = Importer(reader: try XMLTVReader(contentsOf: file))
 ```
 
-To read in a task instead, capture the reader's variable. The task takes it over:
+To read in a task instead, capture the reader's variable. The task takes it over. This works
+for a local variable in a function; at the top level of `main.swift`, a `var` is a global on
+the main actor, and the task cannot take it.
 
 ```swift
 var reader = try XMLTVReader(contentsOf: file)

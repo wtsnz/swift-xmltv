@@ -7,6 +7,11 @@
 /// commits nothing until a record is complete, so a retry is exact. A retry waits until the
 /// input has grown by half the pending bytes, so the total re-decoding work stays linear even for
 /// huge records and tiny chunks.
+///
+/// Gzip input is held compressed and inflated a step at a time, only when the decoder needs more,
+/// so the window stays at about one record plus one step however well the input compresses.
+///
+/// The first error thrown is final: every later call throws it again.
 struct StreamDecoder: ~Copyable {
     enum Step {
         case item(XMLTVItem)
@@ -23,6 +28,8 @@ struct StreamDecoder: ~Copyable {
     private var transcoder: Transcoder?
     private var sniff = ByteBuffer()             // decompressed bytes held until the encoding is known
     private var inflated = ByteBuffer()          // reused gzip output
+    private var compressed = ByteBuffer()        // gzip input not yet inflated, from `compressedStart`
+    private var compressedStart = 0
 
     // UTF-8 window
     private var window = ByteBuffer(capacity: 1 << 20)
@@ -31,13 +38,18 @@ struct StreamDecoder: ~Copyable {
     private var discardedBytes = 0               // UTF-8 bytes dropped from the front of `window`
     private var discardedNewlines = 0
     private var discardedColumn = 0              // bytes of the current line already discarded
-    private var isFinal = false
+    private var isInputFinished = false          // `finish()` was called
+    private var isFinal = false                  // and everything held has reached the window
+    private var failure: XMLTVError?
     private var isEnded = false                  // the report is complete; `next()` returns `.end`
     private var inputProblems: [XMLTVError.Kind] = []
     private var inputByteCount = 0               // raw bytes appended, before decompression
     private(set) var report = XMLTVReport()
 
     private enum Compression { case undetermined, none, gzip(GzipInflater), failed }
+
+    /// The most gzip output added to the window at a time.
+    static let inflateStep = 1 << 20
 
     init(options: XMLTVOptions) {
         self.options = options
@@ -48,10 +60,37 @@ struct StreamDecoder: ~Copyable {
 
     var info: TVInfo? { decoder.info }
 
+    /// Bytes allocated for buffers, which the tests use to check that memory stays bounded.
+    var bufferCapacity: Int { window.capacity + inflated.capacity + compressed.capacity + sniff.capacity + head.capacity }
+
     // MARK: Input
 
     /// Adds the next piece of the raw input: compressed or not, in any supported encoding.
     mutating func append(_ raw: UnsafeBufferPointer<UInt8>) throws(XMLTVError) {
+        try failing { decoder throws(XMLTVError) in try decoder.appendInput(raw) }
+    }
+
+    /// Marks the end of the input.
+    mutating func finish() throws(XMLTVError) {
+        try failing { decoder throws(XMLTVError) in
+            decoder.isInputFinished = true
+            if case .undetermined = decoder.compression { try decoder.resolveCompression() }
+            if !decoder.hasHeldInput { try decoder.completeInput() }
+        }
+    }
+
+    /// Runs `body`, keeping the first error it throws, and throws that error from then on.
+    private mutating func failing<T>(_ body: (inout Self) throws(XMLTVError) -> T) throws(XMLTVError) -> T {
+        if let failure { throw failure }
+        do throws(XMLTVError) {
+            return try body(&self)
+        } catch {
+            failure = error
+            throw error
+        }
+    }
+
+    private mutating func appendInput(_ raw: UnsafeBufferPointer<UInt8>) throws(XMLTVError) {
         inputByteCount += raw.count
         compactWindow()
         switch compression {
@@ -62,15 +101,17 @@ struct StreamDecoder: ~Copyable {
         case .none:
             try appendDecompressed(raw)
         case .gzip(let inflater):
-            try inflate(raw, with: inflater)
+            compressed.removeFirst(compressedStart)
+            compressedStart = 0
+            compressed.append(raw)
+            try inflateHeld(with: inflater)
         case .failed:
             return
         }
     }
 
-    /// Marks the end of the input.
-    mutating func finish() throws(XMLTVError) {
-        if case .undetermined = compression { try resolveCompression() }
+    /// Ends the input once everything held has reached the window.
+    private mutating func completeInput() throws(XMLTVError) {
         if case .gzip(let inflater) = compression, !inflater.isComplete {
             try recordInputProblem(.invalidCompressedData("truncated gzip stream"))
         }
@@ -94,7 +135,8 @@ struct StreamDecoder: ~Copyable {
         if GzipInflater.isGzip(held) {
             let inflater = try GzipInflater()
             compression = .gzip(inflater)
-            try inflate(held, with: inflater)
+            compressed.append(held)
+            try inflateHeld(with: inflater)
         } else {
             compression = .none
             try appendDecompressed(held)
@@ -102,18 +144,42 @@ struct StreamDecoder: ~Copyable {
         head = ByteBuffer()
     }
 
-    /// Decompresses `raw`. On damaged data, what was decompressed is kept, and lenient mode
-    /// parses up to the damage and ignores the rest of the input.
-    private mutating func inflate(_ raw: UnsafeBufferPointer<UInt8>, with inflater: GzipInflater) throws(XMLTVError) {
+    /// Whether gzip input is held that has not reached the window yet.
+    private var hasHeldInput: Bool {
+        guard case .gzip(let inflater) = compression else { return false }
+        return compressedStart < compressed.count || inflater.hasHeldOutput
+    }
+
+    /// Decompresses the next step of the held input. On damaged data, what was decompressed is
+    /// kept, and lenient mode parses up to the damage and ignores the rest of the input.
+    private mutating func inflateHeld(with inflater: GzipInflater) throws(XMLTVError) {
+        let held = UnsafeBufferPointer(rebasing: compressed.bytes[compressedStart...])
         do throws(XMLTVError) {
-            try inflater.inflate(raw, into: &inflated)
+            compressedStart += try inflater.inflate(held, into: &inflated, limit: Self.inflateStep)
         } catch {
+            compression = .failed
+            compressed = ByteBuffer()
+            compressedStart = 0
             try flushInflated()
             try recordInputProblem(error.kind)
-            compression = .failed
             return
         }
         try flushInflated()
+    }
+
+    /// Adds input that is already held: the next step of gzip output, or the end of the input
+    /// once everything held is in the window. Returns false when only new input can help.
+    private mutating func refill() throws(XMLTVError) -> Bool {
+        if hasHeldInput, case .gzip(let inflater) = compression {
+            compactWindow()
+            try inflateHeld(with: inflater)
+            return true
+        }
+        if isInputFinished && !isFinal {
+            try completeInput()
+            return true
+        }
+        return false
     }
 
     private mutating func flushInflated() throws(XMLTVError) {
@@ -142,25 +208,34 @@ struct StreamDecoder: ~Copyable {
 
     /// Drops decoded bytes from the front of the window once they are at least half of it.
     private mutating func compactWindow() {
-        guard consumed > 0, consumed >= window.count / 2 else { return }
-        if let base = window.bytes.baseAddress {
-            discardedNewlines += ByteSearch.countNewlines(in: base, from: 0, end: consumed)
-            // Keep the column of the discard point, for errors on a line that began before it.
-            let lineStart = ByteSearch.lineStart(of: consumed, in: base)
-            discardedColumn = lineStart == 0 ? discardedColumn + consumed : consumed - lineStart
-        }
-        window.removeFirst(consumed)
-        discardedBytes += consumed
-        retryAt = max(0, retryAt - consumed)
-        consumed = 0
+        guard consumed > 0, consumed >= window.count / 2, let base = window.bytes.baseAddress else { return }
+        // A CR at the discard point is kept, so that a CR LF pair split by it counts as one line
+        // end, as it does in the whole document.
+        let discard = base[consumed - 1] == 0x0D ? consumed - 1 : consumed
+        guard discard > 0 else { return }
+        discardedNewlines += ByteSearch.countNewlines(in: base, from: 0, end: discard)
+        // Keep the column of the discard point, for errors on a line that began before it.
+        let lineStart = ByteSearch.lineStart(of: discard, in: base)
+        discardedColumn = lineStart == 0 ? discardedColumn + discard : discard - lineStart
+        window.removeFirst(discard)
+        discardedBytes += discard
+        retryAt = max(0, retryAt - discard)
+        consumed -= discard
     }
 
     // MARK: Decoding
 
     mutating func next() throws(XMLTVError) -> Step {
+        try failing { decoder throws(XMLTVError) in try decoder.nextStep() }
+    }
+
+    private mutating func nextStep() throws(XMLTVError) -> Step {
         if isEnded { return .end }
         while true {
-            guard isFinal || window.count >= retryAt else { return .needsInput }
+            guard isFinal || window.count >= retryAt else {
+                if try refill() { continue }
+                return .needsInput
+            }
             let callStart = consumed
             let sampleCount = decoder.diagnostics.samples.count
             let item: TopLevelItem
@@ -173,7 +248,7 @@ struct StreamDecoder: ~Copyable {
                 // Retry once the input has grown by half the pending bytes. Small records
                 // retry on the next chunk, and the re-decoding of a huge record stays linear.
                 retryAt = window.count + max(1, pending / 2)
-                return .needsInput
+                continue
             } catch where error.kind == .unexpectedEndOfInput && options.policy == .lenient && decoder.info != nil {
                 decoder.diagnostics.discardPending()
                 report.isTruncated = true
@@ -195,7 +270,7 @@ struct StreamDecoder: ~Copyable {
             case .end where !isFinal:
                 // The epilog so far is fine, but content after the root may still arrive.
                 retryAt = window.count + 1
-                return .needsInput
+                continue
             case .end:
                 finishReport(endProblems: inputProblems)
                 return .end

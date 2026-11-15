@@ -98,15 +98,24 @@ The suites, by file:
 | File | Covers |
 |---|---|
 | `ScannerTests` | tokens, truncation versus malformation, search kernels at every alignment, element names |
-| `TimestampTests` | the fast path against `Calendar`, truncated forms, zones, normalisation |
+| `WellFormednessTests` | the markup rules, in skipped content too, error pages, content after the root |
 | `ModelTests` | every DTD field, encodings, gzip, whitespace and entity rules |
+| `RecoveryTests` | each lenient recovery rule, its cost and its count, and the first-occurrence rule |
+| `DiagnosticLocationTests` | diagnostic order, lines and columns, however the input is split or chunked |
+| `FilterTests` | channel and time filters, and that filtered records report nothing |
+| `InputTests` | encoding declarations and overrides, gzip edge cases, options at their extremes |
+| `TimestampTests` | the fast path against `Calendar`, truncated forms, zones, extremes, the encoded form |
+| `ScheduleTests` | sorting, duplicates, inferred ends, identity, current and next, against a linear scan |
 | `DifferentialTests` | an independent decoder built on Foundation's `XMLParser` |
 | `ParallelTests` | parallel output equals serial output, on an adversarial document |
-| `StreamingTests` | streamed items and reports equal the document's, at chunk sizes from 1 byte |
+| `StreamingTests` | streamed items and reports equal the document's at chunk sizes from 1 byte; bounded memory, final errors, cancellation, iterator and report contracts |
 | `RobustnessTests` | truncation at every third byte, malformed input, random mutation |
-| `RegressionTests` | one test per defect found in review |
-| `APITests` | the app-facing contracts: reports after a loop, recovery outcomes and counts, error text, timestamps, schedules |
+| `APITests` | error text, lookups, options, document equality, the encoded forms of stored values |
 | `DocumentationExamplesTests` | the code examples from the README and the DocC articles |
+
+A test that guards a fixed defect goes in the suite for the behaviour it protects, named for
+that behaviour. `expectSamePaths` in `Support.swift` checks one input through the serial,
+split and streaming paths at once; use it for anything that touches recovery or locations.
 
 Some tests also run on real feeds when they are available. Set `XMLTV_CORPUS` to a directory of
 `.xml` files, or place them in `../Research/samples/real` next to the package. Files over 30 MB
@@ -121,10 +130,11 @@ swift build -c release
 ```
 
 Modes are `document`, `document-mmap`, `serial`, `reader`, `filter`, `foundation`, `chunks`,
-`bytes` and `schedule`. The
-harness reports the median and range, and times freeing the result separately. Close other
+`bytes`, `json` and `schedule`. The harness reports the median and range, and times freeing the result separately. Close other
 heavy work first. The parallel numbers are sensitive to load, and the single-thread numbers much
 less so.
+
+`Benchmarks/libxml2-sax-count.c` is the libxml2 baseline; its comment has the build line.
 
 When you change the scanner, decoder or values layer, compare `serial` on a dense feed before
 and after. When you change the drivers, compare `document` on the largest feed you have.

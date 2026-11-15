@@ -11,7 +11,9 @@ Problems in XMLTV input fall into two kinds, and the parser treats them differen
 an unclosed quote, a raw `<` in an attribute value, or a root element other than `<tv>`. Once
 the markup is damaged, the parser can no longer tell which text belongs to which element. Any
 guess would produce data that looks valid and isn't. Broken markup therefore always throws an
-``XMLTVError``, whatever the policy.
+``XMLTVError``, whatever the policy. Input that simply stops, even inside a tag or a quoted
+value, is different: it is a cut-off download, and lenient mode keeps every record before the
+cut.
 
 **Bad content** means the markup is fine but a value is wrong: a timestamp with minute 60, a
 `<length>` with no units, an unknown entity, invalid UTF-8 in a title, a programme with no
@@ -41,16 +43,16 @@ The rule for each kind of problem is fixed:
 | Unknown entity such as `&nbsp;`, or a reference to a forbidden character | Kept literally. | `keptAsWritten` |
 | Invalid UTF-8 | Replaced with U+FFFD. | `repaired` |
 | A character XML forbids, such as NUL or U+FFFF | Kept. | `keptAsWritten` |
-| Unparseable `<length>`, `clumpidx` or icon size | The value becomes nil, or the default. | `valueDropped` |
+| Empty or unparseable `<length>`, or one without known units; unparseable `clumpidx` or icon size | The value becomes nil, or the default. | `valueDropped` |
 | Content after `</tv>` | Ignored. This is usually a second document appended to the first. | `restOfInputIgnored` |
 | Input ends inside the document | Every complete record is kept, and ``XMLTVReport/isTruncated`` is true. | `restOfInputIgnored` |
 | Truncated or corrupt gzip stream | Everything decompressed before the damage is parsed, as for a cut-off download. | `restOfInputIgnored` |
 | Malformed UTF-16 | Replaced with U+FFFD. | `repaired` |
 
 The defaults come from the feeds this library was tested against. The 1.93 GB benchmark feed
-alone has 571 stop times with minute 60, about 1,100 `<rating>` elements with text but no
-`<value>`, and about 1,900 fractional lengths such as `2.5` hours. Rejecting the whole file over
-any of these would help nobody.
+alone has 571 stop times with minute 60, 1,089 `<rating>` elements with text but no `<value>`,
+1,089 empty `<length units="minutes" />` elements, and 1,922 fractional lengths such as `2.5`
+hours. Rejecting the whole file over any of these would help nobody.
 
 ### Summarising a parse
 
@@ -92,8 +94,9 @@ An HTML or JSON error page from a server, or any other input that is not XMLTV, 
 ### Strict mode
 
 ``XMLTVOptions/Policy/strict`` throws on the first problem of any kind, with the same
-``XMLTVError/Kind`` a diagnostic would carry. Use it for validating your own generator's
-output, or when a partial guide is worse than none.
+``XMLTVError/Kind`` a diagnostic would carry. Use it when a partial guide is worse than none,
+or to check that your own generator produces none of the problems in the table above. It is not
+a validator: what it does not check is listed under "What is checked, and what is not" below.
 
 ```swift
 do {
@@ -133,7 +136,8 @@ the parse fails.
 
 The parser checks the structure of the XML in every element, including skipped ones: tags,
 quoting, matching end tags, names that start with a letter, `_` or `:`, comments without `--`
-inside them, and a DOCTYPE only before the root. Broken structure before the root means the
+inside them, processing instructions with a target name, and a DOCTYPE and XML declaration
+only before the root. Broken structure before the root means the
 input is not a guide, ``XMLTVError/Kind/notXMLTV``; after the root it is
 ``XMLTVError/Kind/contentAfterRoot``. It is not a validating XML processor:
 
@@ -144,7 +148,14 @@ input is not a guide, ``XMLTVError/Kind/notXMLTV``; after the root it is
 - Name characters after the first, and `]]>` in text, which XML forbids, are not checked:
   checking them would slow every element for errors no feed makes.
 - Attribute names are not checked for duplicates, and repeated elements that hold one value,
-  such as `<length>`, are not reported. The first occurrence is used.
+  such as `<length>`, are not reported. The first occurrence is used, even when it is invalid.
+- A channel ID declared more than once is not reported. ``XMLTVDocument/channels`` keeps every
+  record, and ``XMLTVSchedule/channel(_:)`` returns the first. The 1.93 GB feed declares 200
+  IDs twice, so key a SwiftUI list of channels by ``XMLTVSchedule/channelIDs``, which lists
+  each once, rather than by ``Channel/id``.
+- The XML declaration's version is not checked; a document that declares 1.1 is read by the
+  XML 1.0 rules. Text directly inside `<tv>`, and elements in the wrong place, such as a nested
+  `<tv>`, are skipped like unknown elements.
 
 ### Filtered records
 

@@ -41,6 +41,9 @@ import Foundation
 /// per document, off the main actor for large guides.
 public struct XMLTVSchedule: Sendable {
     /// One programme in a schedule, with its end and an identity for SwiftUI.
+    ///
+    /// The schedule sets every property, and the ``id`` depends on them, so they are read-only.
+    /// The initializer is for previews and tests.
     public struct Entry: Sendable, Hashable, Identifiable {
         /// An entry's identity: its channel, its start, and its position among the channel's
         /// entries with that start.
@@ -50,6 +53,9 @@ public struct XMLTVSchedule: Sendable {
         /// the same order, so SwiftUI keeps selection and row state across a refresh. IDs are
         /// `Codable`, to restore a selection. Feeds give broadcasts no identity of their own, so
         /// for a reminder, also store what the ID pointed to and check it when you look it up.
+        ///
+        /// The encoded form, an object with `channelID`, `secondsSince1970` and `ordinal`, is
+        /// part of the stable API, so stored IDs stay readable.
         public struct ID: Sendable, Hashable, Codable {
             /// The channel's ID.
             public var channelID: String
@@ -67,16 +73,16 @@ public struct XMLTVSchedule: Sendable {
         }
 
         /// The programme, as parsed.
-        public var programme: Programme
+        public internal(set) var programme: Programme
         /// When the programme ends: its `stop`, or without one, the start of the next programme
         /// on the channel that starts later. Nil for a final programme with no `stop`.
-        public var end: XMLTVTimestamp?
+        public internal(set) var end: XMLTVTimestamp?
         /// The programme's position in the sequence the schedule was built from: its index in
         /// ``XMLTVDocument/programmes``. Use it to get back to the document, not as an identity:
         /// it changes whenever an earlier programme is added or removed.
-        public var index: Int
+        public internal(set) var index: Int
         /// The entry's position among the channel's entries with the same start. See ``ID``.
-        public var ordinal: Int
+        public internal(set) var ordinal: Int
 
         public init(programme: Programme, end: XMLTVTimestamp?, index: Int = 0, ordinal: Int = 0) {
             self.programme = programme
@@ -144,9 +150,14 @@ public struct XMLTVSchedule: Sendable {
     private var timelines: [String: Timeline]
     private var channels: [String: Channel]
 
-    /// Every channel ID that has programmes, each once. Channels the document declares come
-    /// first, in the order it declares them, then any it does not declare, in the order their
-    /// programmes appear.
+    /// Every channel, each once: those the document declares, in the order it declares them,
+    /// whether or not they have programmes, then channels with programmes that the document does
+    /// not declare, in the order their programmes appear.
+    ///
+    /// A declared channel with no programmes is listed, so that a guide screen shows it, empty,
+    /// rather than silently leaving it out; feeds often declare more channels than they list
+    /// programmes for. Its subscript is empty, and ``current(_:at:)`` and ``next(_:after:)``
+    /// return nil. Filter on `!schedule[channelID].isEmpty` to hide such channels.
     public private(set) var channelIDs: [String]
 
     /// Builds the schedule for a document's programmes and channels.
@@ -214,7 +225,7 @@ public struct XMLTVSchedule: Sendable {
         // Declared channels in declaration order, then the rest in order of appearance.
         var listed = Set<String>()
         var channelIDs = declared.compactMap { channel in
-            timelines[channel.id] != nil && listed.insert(channel.id).inserted ? channel.id : nil
+            listed.insert(channel.id).inserted ? channel.id : nil
         }
         channelIDs += order.filter { channels[$0] == nil }
         self.channelIDs = channelIDs

@@ -16,7 +16,7 @@ final class FileInput {
         guard url.isFileURL else { throw XMLTVError(.notAFileURL(url.absoluteString)) }
         path = url.path
         descriptor = open(path, O_RDONLY | O_CLOEXEC)
-        guard descriptor >= 0 else { throw XMLTVError(.io(operation: "open", path: path, errno: errno)) }
+        guard descriptor >= 0 else { let code = errno; throw XMLTVError(.io(operation: "open", path: path, errno: code)) }
     }
 
     deinit { close(descriptor) }
@@ -25,14 +25,16 @@ final class FileInput {
     func read(_ count: Int, _ body: (UnsafeBufferPointer<UInt8>) throws(XMLTVError) -> Void) throws(XMLTVError) -> Bool {
         if buffer.count < count { buffer = [UInt8](repeating: 0, count: count) }
         let descriptor = self.descriptor
-        let n: Int = buffer.withUnsafeMutableBytes { raw in
+        // `errno` is read inside the closure, straight after `read(2)` fails.
+        let (n, code): (Int, Int32) = buffer.withUnsafeMutableBytes { raw in
             while true {
                 let n = systemRead(descriptor, raw.baseAddress, count)
-                if n < 0 && errno == EINTR { continue }
-                return n
+                guard n < 0 else { return (n, 0) }
+                let code = errno
+                if code != EINTR { return (n, code) }
             }
         }
-        if n < 0 { throw XMLTVError(.io(operation: "read", path: path, errno: errno)) }
+        if n < 0 { throw XMLTVError(.io(operation: "read", path: path, errno: code)) }
         if n == 0 { return false }
         try buffer.withUnsafeBufferPointer { buffer throws(XMLTVError) in
             try body(UnsafeBufferPointer(rebasing: buffer[..<n]))

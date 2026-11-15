@@ -67,9 +67,11 @@ for channelID in schedule.channelIDs {
 }
 ```
 
-``XMLTVSchedule/channelIDs`` lists each channel that has programmes once, in the order the feed
-declares them, including channels that have programmes but no `<channel>` record. Some feeds
-declare a channel twice, so ``XMLTVSchedule/channel(_:)`` returns the first record.
+``XMLTVSchedule/channelIDs`` lists every declared channel once, in the order the feed declares
+them, then channels that have programmes but no `<channel>` record. A declared channel with no
+programmes is listed too, with nothing on; feeds often declare more channels than they fill, so
+filter on `!schedule[channelID].isEmpty` to hide those. Some feeds declare a channel twice, so
+``XMLTVSchedule/channel(_:)`` returns the first record.
 ``XMLTVSchedule/current(_:at:)`` is the programme that started most recently, which is right
 when the feed overlaps two; ``XMLTVSchedule/onAir(_:at:)`` returns them all.
 

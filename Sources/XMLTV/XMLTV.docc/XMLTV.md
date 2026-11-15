@@ -36,8 +36,8 @@ interleave channels with programmes, write minute 60 in timestamps, put text str
 these, and every recovery is reported as an ``XMLTVDiagnostic``, so nothing is silently lost.
 Broken markup still throws.
 
-It is many times faster than Foundation's `XMLParser`, and faster on one core than libxml2 is
-at counting elements. <doc:Performance> has the measurements and where the speed comes from,
+It is many times faster than Foundation's `XMLParser`, and as fast on one core as libxml2 is at
+counting elements. <doc:Performance> has the measurements and where the speed comes from,
 and <doc:DesignDecisions> explains what it costs.
 
 ### Names

@@ -58,8 +58,9 @@ public struct XMLTVError: Error, Sendable, Hashable, CustomStringConvertible, Lo
         case missingAttribute(element: String, attribute: String)
         /// A required child is absent, such as a programme's `<title>`.
         case missingElement(element: String, child: String)
-        /// A value that could not be interpreted, such as a non-numeric `<length>`.
-        case invalidValue(element: String, value: String)
+        /// A value that could not be interpreted: the text of an element, such as a non-numeric
+        /// `<length>`, or, when `attribute` is not nil, an attribute of it, such as `clumpidx`.
+        case invalidValue(element: String, attribute: String?, value: String)
         /// A timestamp that could not be parsed, or one that needed normalising, such as minute 60.
         case invalidTimestamp(String)
         /// A zone name missing from ``XMLTVOptions/namedTimeZones``.
@@ -124,7 +125,11 @@ public struct XMLTVError: Error, Sendable, Hashable, CustomStringConvertible, Lo
                 "\(Self.article(element)) <\(element)> has no “\(attribute)” attribute."
             case .missingElement(let element, let child):
                 "\(Self.article(element)) <\(element)> has no <\(child)>."
-            case .invalidValue(let element, let value):
+            case .invalidValue(let element, let attribute?, let value):
+                "\(Self.article(element)) <\(element)> has a “\(attribute)” attribute that could not be read: “\(value)”."
+            case .invalidValue(let element, nil, ""):
+                "\(Self.article(element)) <\(element)> is empty."
+            case .invalidValue(let element, nil, let value):
                 "\(Self.article(element)) <\(element)> has a value that could not be read: “\(value)”."
             case .invalidTimestamp(let text):
                 "The time “\(text)” is not valid."

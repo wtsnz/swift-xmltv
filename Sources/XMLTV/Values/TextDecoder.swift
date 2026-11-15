@@ -76,13 +76,28 @@ struct TextDecoder {
         scratch.removeAll(keepingCapacity: true)
     }
 
+    /// Each piece is checked for invalid UTF-8 on its own, and repaired there: bytes on either
+    /// side of a comment or a child element must not join into one character. Forbidden
+    /// characters do not depend on their neighbours, so the whole text is checked for them at
+    /// the end.
     mutating func appendPiece(
         _ range: ByteRange, mode: Mode, needsDecoding: Bool, in scanner: XMLScanner, diagnostics: inout Diagnostics
     ) throws(XMLTVError) {
+        let pieceStart = scratch.count
         if needsDecoding || mode == .cdata {
             try decode(range, mode: mode, in: scanner, diagnostics: &diagnostics)
         } else {
             scratch.append(contentsOf: scanner.pointer(to: range))
+        }
+        let repaired: String? = scratch.withUnsafeBufferPointer { buffer in
+            let piece = UnsafeBufferPointer(rebasing: buffer[pieceStart...])
+            guard TextValidation.firstProblem(in: piece) != nil else { return nil }
+            let decoded = String(decoding: piece, as: UTF8.self)
+            return decoded.utf8.elementsEqual(piece) ? nil : decoded
+        }
+        if let repaired {
+            try diagnostics.report(.invalidUTF8, .repaired, at: range.start)
+            scratch.replaceSubrange(pieceStart..., with: repaired.utf8)
         }
     }
 

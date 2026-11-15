@@ -8,11 +8,12 @@ The first release.
 
 - `XMLTVDocument` parses whole guides on every core, from a file, `Data` or an async sequence
   of chunks.
-- `XMLTVReader` reads one record at a time from a file or `Data`. It is noncopyable and
-  `Sendable`.
+- `XMLTVReader` reads one record at a time from a file or `Data`, in bounded memory however
+  large the file and however well it compresses. It is noncopyable and `Sendable`, and once it
+  throws, every later call throws the same error.
 - `XMLTVItems` decodes an async sequence of byte chunks, or of single bytes such as
   `URLSession.AsyncBytes`. Its `report` is readable after a `for try await` loop, however the
-  loop ended.
+  loop ended. A cancelled task gets `CancellationError`, never a guide that looks cut off.
 - Every element and attribute in the XMLTV DTD is decoded.
 - Channel and time-window filters skip programmes without decoding them.
 - Input may be UTF-8, UTF-16, ISO-8859-1, ISO-8859-15 or Windows-1252, gzip-compressed or not.
@@ -20,9 +21,11 @@ The first release.
 ### Using the data
 
 - `XMLTVSchedule` groups programmes by channel, sorts them, drops exact duplicates, infers
-  missing stop times, and answers what is current, what is on air and what is next. Its entries
+  missing stop times, and answers what is current, what is on air and what is next. It lists
+  every declared channel, including those with no programmes. Its entries are read-only and
   have IDs that survive a refresh of the feed, for SwiftUI, as long as programmes that start
-  together keep their order.
+  together keep their order. The encoded form of an ID is stable.
+- `XMLTVDocument` is `Hashable`, so a refresh can be compared with the guide it replaces.
 - `XMLTVDocument.channel(id:)`, `Programme.seasonEpisode`, `Programme.credits(_:)`,
   `Array<LocalizedText>.preferred(for:)`, and a `url` on `Icon`, `Programme.Image` and
   `URLReference`.
@@ -35,10 +38,11 @@ The first release.
 - Lenient and strict error policies. Lenient mode reports every recovery as a diagnostic,
   with what it cost: a repaired value, a dropped value, or a dropped programme or channel.
 - `XMLTVReport` counts diagnostics by kind and dropped records over the whole document.
+- Repeated attributes and repeated single-valued elements keep their first occurrence.
 - `XMLTVError` is a `LocalizedError`, and `XMLTVDiagnostic.message` is a sentence for people.
 - Enums that are expected to grow are `@nonexhaustive`.
 
 ### Platforms
 
-Requires Swift 6.2.3 or later. Apple platforms, and Linux, where the test suite passes;
-`URLSession.AsyncBytes` is Apple-only.
+Requires Swift 6.2.3 or later. Apple platforms, and Linux, where the test suite passes and the
+zlib headers must be installed; `URLSession.AsyncBytes` is Apple-only.

@@ -19,7 +19,8 @@ import Synchronization
 /// more chunks only as needed. There is no background task, so memory stays bounded as long
 /// as the chunk source itself waits to be asked: `URLSession.AsyncBytes` does, but an
 /// `AsyncStream` fed by a delegate buffers whatever it is given. Errors from the source are
-/// rethrown unchanged. Parse errors are ``XMLTVError``.
+/// rethrown unchanged. Parse errors are ``XMLTVError``. If the task is cancelled and the source
+/// ends early because of it, as `AsyncStream` does, iteration throws `CancellationError`.
 ///
 /// For a download of known size, saving it to a file and using ``XMLTVDocument`` is usually
 /// simpler and faster; see <doc:ChoosingAnEntryPoint>.
@@ -99,6 +100,10 @@ public struct XMLTVItems<Chunks: AsyncSequence>: AsyncSequence where Chunks.Elem
                             try state.decoder.append(raw.bindMemory(to: UInt8.self))
                         }
                     } else {
+                        // `AsyncStream` and others end, rather than throw, when the task is
+                        // cancelled. That end is not the document's, so it must not read as a
+                        // cut-off download.
+                        try Task.checkCancellation()
                         state.isFinished = true
                         try state.decoder.finish()
                     }
@@ -209,7 +214,8 @@ public struct XMLTVByteChunks<Bytes: AsyncSequence & Sendable>: AsyncSequence, S
                 var local = upstream
                 defer { upstream = local }
                 var chunk: [UInt8] = []
-                chunk.reserveCapacity(chunkSize)
+                // A huge chunk size reserves no more than a large chunk would use.
+                chunk.reserveCapacity(Swift.min(chunkSize, 1 << 20))
                 do {
                     while chunk.count < chunkSize, let byte = try await local.next() {
                         chunk.append(byte)

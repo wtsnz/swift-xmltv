@@ -162,7 +162,7 @@ struct XMLScanner {
             case UInt8(ascii: "!"):
                 if let cdata = try scanMarkupDeclaration() { return .cdata(cdata) }
             case UInt8(ascii: "?"):
-                try skip(past: "?>", from: position &+ 2)
+                try skipProcessingInstruction()
             default:
                 return try scanStartTag(recordingAttributes: true)
             }
@@ -197,7 +197,7 @@ struct XMLScanner {
             case UInt8(ascii: "!"):
                 _ = try scanMarkupDeclaration()
             case UInt8(ascii: "?"):
-                try skip(past: "?>", from: position &+ 2)
+                try skipProcessingInstruction()
             default:
                 guard case .startTag(let child, let isEmpty) = try scanStartTag(recordingAttributes: false) else {
                     preconditionFailure("scanStartTag returns start tags")
@@ -356,10 +356,17 @@ struct XMLScanner {
                 i = close
             case UInt8(ascii: "<") where subsetDepth > 0 && i &+ 3 < end && base[i &+ 1] == UInt8(ascii: "!")
                 && base[i &+ 2] == UInt8(ascii: "-") && base[i &+ 3] == UInt8(ascii: "-"):
-                // A comment in the internal subset may contain quotes and brackets.
-                let close = ByteSearch.first("-->", in: base, from: i &+ 4, end: end)
+                // A comment in the internal subset may contain quotes and brackets. It follows
+                // the same rule as any other comment.
+                let dashes = ByteSearch.first("--", in: base, from: i &+ 4, end: end)
+                guard dashes &+ 2 < end else { throw truncated() }
+                guard base[dashes &+ 2] == UInt8(ascii: ">") else { throw malformed("'--' inside a comment") }
+                i = dashes &+ 2
+            case UInt8(ascii: "<") where subsetDepth > 0 && i &+ 1 < end && base[i &+ 1] == UInt8(ascii: "?"):
+                // So may a processing instruction.
+                let close = ByteSearch.first("?>", in: base, from: i &+ 2, end: end)
                 guard close < end else { throw truncated() }
-                i = close &+ 2
+                i = close &+ 1
             case UInt8(ascii: "["): subsetDepth &+= 1
             case UInt8(ascii: "]"): subsetDepth &-= 1
             case UInt8(ascii: ">") where subsetDepth <= 0:
@@ -381,10 +388,28 @@ struct XMLScanner {
         return true
     }
 
-    private mutating func skip(past terminator: StaticString, from start: Int) throws(XMLTVError) {
-        let found = ByteSearch.first(terminator, in: base, from: start, end: end)
-        guard found < end else { throw truncated() }
-        position = found &+ terminator.utf8CodeUnitCount
+    /// Consumes `<?target …?>` at `position`. The target must be a name. `xml`, in any case, is
+    /// the XML declaration, which may only come before the root element; the transcoder reads
+    /// its encoding, and its version is not checked.
+    private mutating func skipProcessingInstruction() throws(XMLTVError) {
+        let nameStart = position &+ 2
+        var i = nameStart
+        while i < end && !base[i].isXMLWhitespace && base[i] != UInt8(ascii: "?") { i &+= 1 }
+        guard i < end else { throw truncated() }
+        guard i > nameStart, base[nameStart].isXMLNameStart else {
+            throw malformed("a processing instruction needs a target name")
+        }
+        let isDeclaration = i &- nameStart == 3 && base[nameStart] | 0x20 == UInt8(ascii: "x")
+            && base[nameStart &+ 1] | 0x20 == UInt8(ascii: "m") && base[nameStart &+ 2] | 0x20 == UInt8(ascii: "l")
+        if isDeclaration && !isInProlog { throw malformed("the XML declaration must come before the root element") }
+        // After the target: `?>`, or whitespace and then anything up to `?>`.
+        if base[i] == UInt8(ascii: "?") {
+            guard i &+ 1 < end else { throw truncated() }
+            guard base[i &+ 1] == UInt8(ascii: ">") else { throw malformed("expected '?>' after a processing instruction target") }
+        }
+        let close = ByteSearch.first("?>", in: base, from: i, end: end)
+        guard close < end else { throw truncated() }
+        position = close &+ 2
     }
 
     // MARK: Errors

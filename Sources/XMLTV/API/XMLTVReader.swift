@@ -11,7 +11,8 @@ public enum XMLTVItem: Sendable, Hashable {
 }
 
 /// Reads an XMLTV document one record at a time, in document order, in bounded memory: a 1 MiB
-/// read buffer, a cache of recent strings capped at 4 MiB of text, and the record being read.
+/// read buffer, up to 1 MiB of decompressed gzip, a table of the first 4 MiB of distinct
+/// strings, and the record being read.
 ///
 /// ```swift
 /// var reader = try XMLTVReader(contentsOf: url)
@@ -56,6 +57,8 @@ public struct XMLTVReader: ~Copyable, @unchecked Sendable {
     public var report: XMLTVReport { state.stream.report }
 
     /// The next channel or programme, or nil at the end of the document.
+    ///
+    /// After it throws, the reader is finished: every later call throws the same error.
     public mutating func next() throws(XMLTVError) -> XMLTVItem? {
         try state.next()
     }

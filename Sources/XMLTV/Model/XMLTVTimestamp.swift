@@ -70,22 +70,35 @@ public struct XMLTVTimestamp: Sendable, Hashable, Comparable, Codable {
     }
 
     /// The first second after the period this timestamp names: the next year for `2024`, the
-    /// next day for `20240101`. For a timestamp of second precision, the next second.
+    /// next day for `20240101`. For a timestamp of second precision, the next second. Saturates
+    /// at the end of the `Int64` range.
     var periodEndSecondsSince1970: Int64 {
+        func saturating(_ result: (partialValue: Int64, overflow: Bool)) -> Int64 {
+            result.overflow ? .max : result.partialValue
+        }
         switch precision {
-        case .second: return secondsSince1970 &+ 1
-        case .minute: return secondsSince1970 &+ 60
-        case .hour: return secondsSince1970 &+ 3600
-        case .day: return secondsSince1970 &+ 86_400
+        case .second: return saturating(secondsSince1970.addingReportingOverflow(1))
+        case .minute: return saturating(secondsSince1970.addingReportingOverflow(60))
+        case .hour: return saturating(secondsSince1970.addingReportingOverflow(3600))
+        case .day: return saturating(secondsSince1970.addingReportingOverflow(86_400))
         case .month, .year:
             // Calendar arithmetic, in the written offset.
-            let offset = Int64(utcOffsetSeconds)
-            let local = secondsSince1970 &+ offset
-            let days = local >= 0 ? local / 86_400 : (local &- 86_399) / 86_400
-            let (year, month, _) = TimestampParser.civilFromDays(Int(days))
-            let next = precision == .year ? (year + 1, 1) : (month == 12 ? (year + 1, 1) : (year, month + 1))
-            return Int64(TimestampParser.daysFromCivil(next.0, next.1, 1)) &* 86_400 &- offset
+            let (year, month, _) = TimestampParser.civilFromDays(local.day)
+            let next = precision == .year || month == 12 ? (year + 1, 1) : (year, month + 1)
+            let days = TimestampParser.daysFromCivil(next.0, next.1, 1)
+            return Int64(clamping: Int128(days) * 86_400 - Int128(utcOffsetSeconds))
         }
+    }
+
+    /// The day since 1970-01-01, and the second of that day, in the written offset. The offset is
+    /// applied after splitting, so no value of the fields overflows.
+    var local: (day: Int64, second: Int64) {
+        var day = secondsSince1970 / 86_400
+        var second = secondsSince1970 % 86_400 + Int64(utcOffsetSeconds)
+        let carry = second >= 0 ? second / 86_400 : (second - 86_399) / 86_400
+        day += carry
+        second -= carry * 86_400
+        return (day, second)
     }
 
     /// Parses XMLTV timestamp text, such as `20240101120000 +0100`, `2024` or
@@ -184,14 +197,14 @@ extension XMLTVTimestamp: CustomStringConvertible {
     /// ISO 8601 in the written offset, to the precision of the source: `2024-05-17T02:02:00+01:00`,
     /// or `2024-05` for a month. An unresolved zone name is marked, since the time shown is UTC.
     public var description: String {
-        let local = secondsSince1970 + Int64(utcOffsetSeconds)
-        var days = local / 86_400, seconds = local % 86_400
-        if seconds < 0 { days -= 1; seconds += 86_400 }
-        let (year, month, day) = TimestampParser.civilFromDays(Int(days))
+        let (days, seconds) = local
+        let (year, month, day) = TimestampParser.civilFromDays(days)
         let hour = seconds / 3600, minute = seconds / 60 % 60, second = seconds % 60
 
         func two(_ value: some BinaryInteger) -> String { value < 10 ? "0\(value)" : "\(value)" }
-        var text = year < 1000 ? String(repeating: "0", count: 4 - String(year).count) + "\(year)" : "\(year)"
+        // Years before 1 are written as ISO 8601 writes them: 0 is 1 BC, and -1 is `-0001`.
+        let digits = String(year.magnitude)
+        var text = (year < 0 ? "-" : "") + String(repeating: "0", count: max(0, 4 - digits.count)) + digits
         guard precision > .year else { return text }
         text += "-" + two(month)
         guard precision > .month else { return text }

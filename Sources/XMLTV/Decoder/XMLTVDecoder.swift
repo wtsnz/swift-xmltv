@@ -214,17 +214,13 @@ struct XMLTVDecoder {
 
     private mutating func decodeTVInfo() throws(XMLTVError) -> TVInfo {
         var info = TVInfo()
-        // In reverse, so that the first occurrence of a repeated attribute is the one kept.
-        for index in (0..<scanner.attributeCount).reversed() {
-            let attribute = scanner.attribute(at: index)
-            let name = attribute.name
-            if scanner.bytes(name, equal: "date") { info.date = try string(attribute) }
-            else if scanner.bytes(name, equal: "source-info-url") { info.sourceInfoURL = try string(attribute) }
-            else if scanner.bytes(name, equal: "source-info-name") { info.sourceInfoName = try string(attribute) }
-            else if scanner.bytes(name, equal: "source-data-url") { info.sourceDataURL = try string(attribute) }
-            else if scanner.bytes(name, equal: "generator-info-name") { info.generatorInfoName = try string(attribute) }
-            else if scanner.bytes(name, equal: "generator-info-url") { info.generatorInfoURL = try string(attribute) }
-        }
+        // `attribute(_:)` finds the first occurrence of a repeated attribute, which is the one kept.
+        info.date = try optionalString("date")
+        info.sourceInfoURL = try optionalString("source-info-url")
+        info.sourceInfoName = try optionalString("source-info-name")
+        info.sourceDataURL = try optionalString("source-data-url")
+        info.generatorInfoName = try optionalString("generator-info-name")
+        info.generatorInfoURL = try optionalString("generator-info-url")
         return info
     }
 
@@ -394,13 +390,10 @@ struct XMLTVDecoder {
 
     mutating func image(_ name: ByteRange, isEmpty: Bool) throws(XMLTVError) -> Programme.Image {
         var image = Programme.Image("")
-        for index in 0..<scanner.attributeCount {
-            let attribute = scanner.attribute(at: index)
-            if scanner.bytes(attribute.name, equal: "type") { image.type = try string(attribute) }
-            else if scanner.bytes(attribute.name, equal: "size") { image.size = try string(attribute) }
-            else if scanner.bytes(attribute.name, equal: "orient") { image.orientation = try string(attribute) }
-            else if scanner.bytes(attribute.name, equal: "system") { image.system = try string(attribute) }
-        }
+        image.type = try optionalString("type")
+        image.size = try optionalString("size")
+        image.orientation = try optionalString("orient")
+        image.system = try optionalString("system")
         image.urlString = try textContent(of: name, isEmpty: isEmpty)
         return image
     }
@@ -411,6 +404,12 @@ struct XMLTVDecoder {
     @inline(__always)
     mutating func string(_ attribute: RawAttribute) throws(XMLTVError) -> String {
         try text.attribute(attribute, in: scanner, diagnostics: &diagnostics)
+    }
+
+    /// The decoded value of the first attribute of the current start tag with this name, or nil.
+    mutating func optionalString(_ name: StaticString) throws(XMLTVError) -> String? {
+        guard let attribute = scanner.attribute(name) else { return nil }
+        return try string(attribute)
     }
 
     /// Parses a timestamp attribute. `ifInvalid` says what an unparseable value costs: by default
@@ -444,7 +443,7 @@ struct XMLTVDecoder {
     mutating func integer(_ attribute: RawAttribute, element: String) throws(XMLTVError) -> Int? {
         let value = try text.withAttributeBytes(attribute, in: scanner, diagnostics: &diagnostics) { Self.integer($0) }
         if value == nil {
-            try diagnostics.report(.invalidValue(element: element, value: scanner.string(attribute.value)), .valueDropped, at: attribute.value.start)
+            try diagnostics.report(.invalidValue(element: element, attribute: scanner.string(attribute.name), value: scanner.string(attribute.value)), .valueDropped, at: attribute.value.start)
         }
         return value
     }

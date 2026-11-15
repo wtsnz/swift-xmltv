@@ -30,16 +30,18 @@ enum DocumentInput {
     ) throws(XMLTVError) -> R {
         guard url.isFileURL else { throw XMLTVError(.notAFileURL(url.absoluteString)) }
         let descriptor = open(url.path, O_RDONLY | O_CLOEXEC)
-        guard descriptor >= 0 else { throw XMLTVError(.io(operation: "open", path: url.path, errno: errno)) }
+        // `errno` is read straight after each failing call, before anything can change it.
+        guard descriptor >= 0 else { let code = errno; throw XMLTVError(.io(operation: "open", path: url.path, errno: code)) }
         defer { close(descriptor) }
 
         var info = stat()
-        guard fstat(descriptor, &info) == 0 else { throw XMLTVError(.io(operation: "stat", path: url.path, errno: errno)) }
+        guard fstat(descriptor, &info) == 0 else { let code = errno; throw XMLTVError(.io(operation: "stat", path: url.path, errno: code)) }
         let size = Int(info.st_size)
 
         if options.fileAccess == .memoryMapped && size > 0 {
             guard let mapping = mmap(nil, size, PROT_READ, MAP_PRIVATE, descriptor, 0), mapping != MAP_FAILED else {
-                throw XMLTVError(.io(operation: "mmap", path: url.path, errno: errno))
+                let code = errno
+                throw XMLTVError(.io(operation: "mmap", path: url.path, errno: code))
             }
             defer { munmap(mapping, size) }
             _ = madvise(mapping, size, MADV_WILLNEED)

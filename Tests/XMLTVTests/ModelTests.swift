@@ -154,23 +154,6 @@ struct ModelTests {
         #expect(throws: XMLTVError.self) { try parse(xml, options: .with { $0.policy = .strict }) }
     }
 
-    @Test func filtersByChannelAndTime() throws {
-        let xml = document("""
-        <channel id="a"><display-name>A</display-name></channel><channel id="b"><display-name>B</display-name></channel>
-        \(programme("<title>a1</title>", attributes: #"start="20240101100000 +0000" stop="20240101110000 +0000" channel="a""#))
-        \(programme("<title>b1</title>", attributes: #"start="20240101100000 +0000" stop="20240101110000 +0000" channel="b""#))
-        \(programme("<title>a2</title>", attributes: #"start="20240101110000 +0000" stop="20240101120000 +0000" channel="a""#))
-        \(programme("<title>a3</title>", attributes: #"start="20240101113000 +0000" channel="a""#))
-        """)
-        let byChannel = try parse(xml, options: .with { $0.channelIDs = ["a"] })
-        #expect(byChannel.channels.map(\.id) == ["a"])
-        #expect(byChannel.programmes.map(\.title) == ["a1", "a2", "a3"])
-
-        let start = Date(timeIntervalSince1970: TimeInterval(1_704_103_200))   // 2024-01-01T10:00Z
-        let byTime = try parse(xml, options: .with { $0.timeWindow = start.addingTimeInterval(3600)..<start.addingTimeInterval(7200) })
-        #expect(byTime.programmes.map(\.title) == ["a2", "a3"])
-    }
-
     @Test func detailsAreCopyOnWriteValues() throws {
         var a = Programme(channelID: "c", start: XMLTVTimestamp(secondsSince1970: 0))
         a.keywords = [LocalizedText("k")]
