@@ -26,7 +26,7 @@ enum DocumentDriver {
         var info: TVInfo
         var channels: [Channel]
         var programmes: [Programme]
-        var report: ParseReport
+        var report: XMLTVReport
     }
 
     static let parallelThreshold = 1 << 20
@@ -36,7 +36,7 @@ enum DocumentDriver {
     ///   Normally chosen by ``splitPoints(_:parallelism:)``. Tests pass adversarial ones; any
     ///   ascending list gives the same output.
     static func parse(
-        _ bytes: UnsafeBufferPointer<UInt8>, input: DocumentInput.InputInfo, options: ParseOptions, splits: [Int]? = nil
+        _ bytes: UnsafeBufferPointer<UInt8>, input: DocumentInput.InputInfo, options: XMLTVOptions, splits: [Int]? = nil
     ) throws(XMLTVError) -> Output {
         let splits = splits ?? splitPoints(bytes, parallelism: options.parallelism)
         let chunkCount = splits.count - 1
@@ -74,7 +74,7 @@ enum DocumentDriver {
         }
     }
 
-    private static func threadCount(_ parallelism: ParseOptions.Parallelism) -> Int {
+    private static func threadCount(_ parallelism: XMLTVOptions.Parallelism) -> Int {
         switch parallelism {
         case .serial: 1
         case .threads(let n): max(1, n)
@@ -86,7 +86,7 @@ enum DocumentDriver {
 
     /// Offsets where chunks start: 0, then the first plausible `<programme` at or after each
     /// equal division, then the end of the buffer.
-    static func splitPoints(_ bytes: UnsafeBufferPointer<UInt8>, parallelism: ParseOptions.Parallelism) -> [Int] {
+    static func splitPoints(_ bytes: UnsafeBufferPointer<UInt8>, parallelism: XMLTVOptions.Parallelism) -> [Int] {
         let count = bytes.count
         let threads = parallelism == .automatic && count < parallelThreshold ? 1 : threadCount(parallelism)
         // Several chunks per thread balance the load between performance and efficiency cores.
@@ -135,7 +135,7 @@ enum DocumentDriver {
         var marks: [Int] = []
         var diagnostics: Diagnostics
 
-        init(start: Int, options: ParseOptions) {
+        init(start: Int, options: XMLTVOptions) {
             self.start = start
             self.diagnostics = Diagnostics(policy: options.policy, sampleLimit: options.diagnosticLimit, recordsOffsets: true)
         }
@@ -145,7 +145,7 @@ enum DocumentDriver {
     /// `syncMarks`, it also stops at the first element start found in that sorted list.
     static func decodeChunk(
         _ bytes: UnsafeBufferPointer<UInt8>, from start: Int, boundary: Int,
-        phase: XMLTVDecoder.Phase, options: ParseOptions, syncMarks: [Int]?
+        phase: XMLTVDecoder.Phase, options: XMLTVOptions, syncMarks: [Int]?
     ) -> ChunkResult {
         let result = ChunkResult(start: start, options: options)
         var decoder = XMLTVDecoder(
@@ -208,7 +208,7 @@ enum DocumentDriver {
     /// Chooses the segments that make up the sequential parse, re-decoding wherever a speculative
     /// chunk does not line up.
     static func stitch(
-        _ bytes: UnsafeBufferPointer<UInt8>, results: [ChunkResult], splits: [Int], options: ParseOptions
+        _ bytes: UnsafeBufferPointer<UInt8>, results: [ChunkResult], splits: [Int], options: XMLTVOptions
     ) -> [Segment] {
         var segments = [Segment(result: results[0], from: 0)]
         var current = results[0]
@@ -259,11 +259,12 @@ enum DocumentDriver {
     // MARK: Assembly
 
     static func assemble(
-        _ bytes: UnsafeBufferPointer<UInt8>, segments: [Segment], input: DocumentInput.InputInfo, options: ParseOptions
+        _ bytes: UnsafeBufferPointer<UInt8>, segments: [Segment], input: DocumentInput.InputInfo, options: XMLTVOptions
     ) throws(XMLTVError) -> Output {
-        var report = ParseReport()
+        var report = XMLTVReport()
         report.encoding = input.encoding
-        report.byteCount = bytes.count
+        report.decodedByteCount = bytes.count
+        report.inputByteCount = input.inputByteCount
 
         // How the sequential parse ended.
         if case .failed(var error) = segments.last!.result.termination {
@@ -289,23 +290,28 @@ enum DocumentDriver {
             programmeCount += result.programmeStarts.count - first
 
             let firstDiagnostic = lowerBound(result.diagnostics.offsets, segment.from)
-            report.diagnosticCount += result.diagnostics.count - firstDiagnostic
+            for outcome in result.diagnostics.outcomes[firstDiagnostic...] {
+                report.count(outcome.code, outcome.recovery)
+            }
             for sample in result.diagnostics.samples where sample.byteOffset >= segment.from {
                 if diagnostics.count < options.diagnosticLimit { diagnostics.append(sample) }
             }
         }
         // Problems found at the end, or before parsing (in decompression or transcoding), are
         // reported at the end of the document, which keeps the list in document order.
-        let endProblems = (report.isTruncated ? [XMLTVError.Kind.unexpectedEndOfInput] : []) + input.problems
+        // The cause, such as damaged compressed data, comes before its effect, truncation.
+        let endProblems = input.problems + (report.isTruncated ? [XMLTVError.Kind.unexpectedEndOfInput] : [])
         for kind in endProblems {
-            report.diagnosticCount += 1
+            report.count(kind.code, Diagnostics.recoveryAtEnd(kind))
             if diagnostics.count < options.diagnosticLimit {
-                diagnostics.append(XMLTVDiagnostic(kind: kind, byteOffset: bytes.count, line: 0))
+                diagnostics.append(XMLTVDiagnostic(kind: kind, recovery: Diagnostics.recoveryAtEnd(kind), byteOffset: bytes.count))
             }
         }
         report.diagnostics = withLineNumbers(diagnostics, in: bytes)
 
-        let programmes = [Programme](unsafeUninitializedCapacity: programmeCount) { buffer, initialized in
+        // With no programmes, `unsafeUninitializedCapacity: 0` would write a count into the
+        // standard library's shared empty-array storage, which races between parses.
+        let programmes = programmeCount == 0 ? [] : [Programme](unsafeUninitializedCapacity: programmeCount) { buffer, initialized in
             var written = 0
             for (segment, first) in zip(segments, firstProgramme) {
                 written += segment.result.programmes.moveElements(from: first, to: buffer.baseAddress! + written)

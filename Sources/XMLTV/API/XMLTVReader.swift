@@ -27,26 +27,35 @@ public enum XMLTVItem: Sendable, Hashable {
 ///
 /// The reader is serial. To parse a file into memory as fast as possible, use ``XMLTVDocument``,
 /// which uses every core.
-public struct XMLTVReader: ~Copyable {
+///
+/// A reader is a single pass over its input, and it is noncopyable so that sharing one is a
+/// compile error rather than two owners silently taking records from the same cursor. Store it
+/// in a class, an actor or another noncopyable type, and pass it as `inout`, or `consuming` to
+/// hand it over. It is `Sendable`, so it can be moved into a task or an actor;
+/// <doc:ChoosingAnEntryPoint#Concurrency> shows how.
+public struct XMLTVReader: ~Copyable, @unchecked Sendable {
     /// The decoder state lives in a class so that the public type's layout does not depend on
-    /// internal types.
+    /// internal types. The reader is `@unchecked Sendable` because it is noncopyable: whoever
+    /// holds it owns the state alone, and `next()` needs exclusive access.
     private let state: State
 
-    /// Opens a file for reading. Gzip compression is detected from the content.
-    public init(contentsOf url: URL, options: ParseOptions = ParseOptions()) throws(XMLTVError) {
+    /// Opens a file for reading. Gzip compression is detected from the content. The URL must be a
+    /// file URL.
+    public init(contentsOf url: URL, options: XMLTVOptions = XMLTVOptions()) throws(XMLTVError) {
         state = State(source: .file(try FileInput(url)), options: options)
     }
 
     /// Reads a document held in memory, compressed or not.
-    public init(data: Data, options: ParseOptions = ParseOptions()) {
+    public init(data: Data, options: XMLTVOptions = XMLTVOptions()) {
         state = State(source: .data(data, offset: 0), options: options)
     }
 
-    /// The attributes of the root `<tv>` element, once it has been read.
+    /// The attributes of the root `<tv>` element. Nil until the first call to ``next()``, which
+    /// reads them.
     public var info: TVInfo? { state.stream.info }
 
     /// Diagnostics and status so far. Complete once ``next()`` has returned nil.
-    public var report: ParseReport { state.stream.report }
+    public var report: XMLTVReport { state.stream.report }
 
     /// The next channel or programme, or nil at the end of the document.
     public mutating func next() throws(XMLTVError) -> XMLTVItem? {
@@ -65,7 +74,7 @@ public struct XMLTVReader: ~Copyable {
         var source: Source
         var isExhausted = false
 
-        init(source: Source, options: ParseOptions) {
+        init(source: Source, options: XMLTVOptions) {
             self.stream = StreamDecoder(options: options)
             self.source = source
         }
@@ -122,9 +131,10 @@ final class FileInput {
     private var buffer: [UInt8] = []
 
     init(_ url: URL) throws(XMLTVError) {
+        guard url.isFileURL else { throw XMLTVError(.notAFileURL(url.absoluteString)) }
         path = url.path
         descriptor = open(path, O_RDONLY | O_CLOEXEC)
-        guard descriptor >= 0 else { throw XMLTVError(.io(operation: "open \(path)", errno: errno)) }
+        guard descriptor >= 0 else { throw XMLTVError(.io(operation: "open", path: path, errno: errno)) }
     }
 
     deinit { close(descriptor) }
@@ -140,7 +150,7 @@ final class FileInput {
                 return n
             }
         }
-        if n < 0 { throw XMLTVError(.io(operation: "read \(path)", errno: errno)) }
+        if n < 0 { throw XMLTVError(.io(operation: "read", path: path, errno: errno)) }
         if n == 0 { return false }
         try buffer.withUnsafeBufferPointer { buffer throws(XMLTVError) in
             try body(UnsafeBufferPointer(rebasing: buffer[..<n]))

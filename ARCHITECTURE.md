@@ -8,7 +8,7 @@ This document is for people changing the library. For using it, see the DocC doc
 Each layer calls only the one below it. Only the API and model are public.
 
 ```
-API       XMLTVDocument  XMLTVReader  XMLTVItems  ParseOptions  XMLTVError  ParseReport
+API       XMLTVDocument  XMLTVReader  XMLTVItems  XMLTVSchedule  XMLTVOptions  XMLTVError  XMLTVReport
 Model     TVInfo  Channel  Programme (+ nested Credit, Rating, EpisodeNumber, ...)  XMLTVTimestamp
 Drivers   DocumentDriver  (split, decode in parallel, verify, stitch, merge)
           StreamDecoder   (UTF-8 window, retry of the incomplete record)
@@ -20,7 +20,7 @@ Input     DocumentInput  GzipInflater  EncodingDetector  Transcoder  ByteBuffer
 
 | Directory | What lives there |
 |---|---|
-| `Sources/XMLTV/API` | public entry points, options, errors, report |
+| `Sources/XMLTV/API` | public entry points, options, errors, report, and the schedule built on a document |
 | `Sources/XMLTV/Model` | public value types; no parsing logic |
 | `Sources/XMLTV/Drivers` | how input reaches the decoder: whole buffer in parallel, or a window |
 | `Sources/XMLTV/Decoder` | XMLTV semantics: which element means what |
@@ -101,6 +101,7 @@ The suites, by file:
 | `StreamingTests` | streamed items and reports equal the document's, at chunk sizes from 1 byte |
 | `RobustnessTests` | truncation at every third byte, malformed input, random mutation |
 | `RegressionTests` | one test per defect found in review |
+| `APITests` | the app-facing contracts: reports after a loop, recovery outcomes and counts, error text, timestamps, schedules |
 | `DocumentationExamplesTests` | the code examples from the README and the DocC articles |
 
 Some tests also run on real feeds when they are available. Set `XMLTV_CORPUS` to a directory of
@@ -115,13 +116,26 @@ swift build -c release
 .build/release/xmltv-bench <mode> <file> [repetitions]
 ```
 
-Modes are `document`, `document-mmap`, `serial`, `reader`, `filter` and `foundation`. The
+Modes are `document`, `document-mmap`, `serial`, `reader`, `filter`, `foundation`, `chunks`,
+`bytes` and `schedule`. The
 harness reports the median and range, and times freeing the result separately. Close other
 heavy work first. The parallel numbers are sensitive to load, and the single-thread numbers much
 less so.
 
 When you change the scanner, decoder or values layer, compare `serial` on a dense feed before
 and after. When you change the drivers, compare `document` on the largest feed you have.
+
+## Public API rules
+
+- Guide data has plain names; the parser's own types are prefixed `XMLTV`. Never declare a
+  type named `XMLTV`, which would break the `XMLTV.Channel` spelling apps use to disambiguate.
+- An enum that may grow is `@nonexhaustive`. Adding a case to one is not breaking; adding the
+  attribute to an existing closed enum is.
+- `Programme` and `Channel` do not gain `Identifiable`, beyond `Channel`'s existing one, or
+  `Codable`. The DocC catalog promises this, because a library conformance would silently
+  replace one an app declared.
+- Every diagnostic is reported with the `XMLTVDiagnostic.Recovery` that describes what it
+  cost. A new recovery rule picks an existing case if one fits.
 
 ## Style
 

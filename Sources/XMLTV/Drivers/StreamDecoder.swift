@@ -14,7 +14,7 @@ struct StreamDecoder: ~Copyable {
         case end
     }
 
-    private let options: ParseOptions
+    private let options: XMLTVOptions
     private var decoder: XMLTVDecoder
 
     // Input pipeline
@@ -31,12 +31,14 @@ struct StreamDecoder: ~Copyable {
     private var discardedBytes = 0               // UTF-8 bytes dropped from the front of `window`
     private var discardedNewlines = 0
     private var isFinal = false
+    private var isEnded = false                  // the report is complete; `next()` returns `.end`
     private var inputProblems: [XMLTVError.Kind] = []
-    private(set) var report = ParseReport()
+    private var inputByteCount = 0               // raw bytes appended, before decompression
+    private(set) var report = XMLTVReport()
 
     private enum Compression { case undetermined, none, gzip(GzipInflater), failed }
 
-    init(options: ParseOptions) {
+    init(options: XMLTVOptions) {
         self.options = options
         self.decoder = XMLTVDecoder(
             scanner: XMLScanner(UnsafeBufferPointer(start: nil, count: 0)), phase: .prolog, options: options,
@@ -49,6 +51,7 @@ struct StreamDecoder: ~Copyable {
 
     /// Adds the next piece of the raw input: compressed or not, in any supported encoding.
     mutating func append(_ raw: UnsafeBufferPointer<UInt8>) throws(XMLTVError) {
+        inputByteCount += raw.count
         compactWindow()
         switch compression {
         case .undetermined:
@@ -58,16 +61,7 @@ struct StreamDecoder: ~Copyable {
         case .none:
             try appendDecompressed(raw)
         case .gzip(let inflater):
-            do throws(XMLTVError) {
-                try inflater.inflate(raw, into: &inflated)
-            } catch {
-                // Keep what was decompressed. Lenient mode then parses up to the damage.
-                try flushInflated()
-                try recordInputProblem(error.kind)
-                compression = .failed
-                return
-            }
-            try flushInflated()
+            try inflate(raw, with: inflater)
         case .failed:
             return
         }
@@ -99,13 +93,26 @@ struct StreamDecoder: ~Copyable {
         if GzipInflater.isGzip(held) {
             let inflater = try GzipInflater()
             compression = .gzip(inflater)
-            try inflater.inflate(held, into: &inflated)
-            try flushInflated()
+            try inflate(held, with: inflater)
         } else {
             compression = .none
             try appendDecompressed(held)
         }
         head = ByteBuffer()
+    }
+
+    /// Decompresses `raw`. On damaged data, what was decompressed is kept, and lenient mode
+    /// parses up to the damage and ignores the rest of the input.
+    private mutating func inflate(_ raw: UnsafeBufferPointer<UInt8>, with inflater: GzipInflater) throws(XMLTVError) {
+        do throws(XMLTVError) {
+            try inflater.inflate(raw, into: &inflated)
+        } catch {
+            try flushInflated()
+            try recordInputProblem(error.kind)
+            compression = .failed
+            return
+        }
+        try flushInflated()
     }
 
     private mutating func flushInflated() throws(XMLTVError) {
@@ -147,6 +154,7 @@ struct StreamDecoder: ~Copyable {
     // MARK: Decoding
 
     mutating func next() throws(XMLTVError) -> Step {
+        if isEnded { return .end }
         while true {
             guard isFinal || window.count >= retryAt else { return .needsInput }
             let callStart = consumed
@@ -165,7 +173,8 @@ struct StreamDecoder: ~Copyable {
             } catch where error.kind == .unexpectedEndOfInput && options.policy == .lenient && decoder.info != nil {
                 decoder.diagnostics.discardPending()
                 report.isTruncated = true
-                finishReport(endProblems: [.unexpectedEndOfInput] + inputProblems)
+                // The cause, such as damaged compressed data, comes before its effect.
+                finishReport(endProblems: inputProblems + [.unexpectedEndOfInput])
                 return .end
             } catch {
                 var error = error
@@ -197,22 +206,28 @@ struct StreamDecoder: ~Copyable {
         decoder.diagnostics.rebaseSamples(from: index, by: discardedBytes) { offset in
             discardedNewlines + ByteSearch.countNewlines(in: window.baseAddress!, from: 0, end: min(offset, window.count)) + 1
         }
+        let totals = decoder.diagnostics.totals
         report.diagnostics = decoder.diagnostics.samples
-        report.diagnosticCount = decoder.diagnostics.count
-        report.byteCount = discardedBytes + consumed
+        report.diagnosticCount = totals.diagnosticCount
+        report.diagnosticCountsByCode = totals.diagnosticCountsByCode
+        report.droppedProgrammeCount = totals.droppedProgrammeCount
+        report.droppedChannelCount = totals.droppedChannelCount
+        report.decodedByteCount = discardedBytes + consumed
+        report.inputByteCount = inputByteCount
     }
 
     /// Adds the problems found at the end of the input, after every record.
     private mutating func finishReport(endProblems: [XMLTVError.Kind]) {
+        isEnded = true
         let end = discardedBytes + window.count
         let line = discardedNewlines + (window.bytes.baseAddress.map { ByteSearch.countNewlines(in: $0, from: 0, end: window.count) } ?? 0) + 1
         for kind in endProblems {
-            report.diagnosticCount += 1
-            if report.diagnostics.count < options.diagnosticLimit {
-                report.diagnostics.append(XMLTVDiagnostic(kind: kind, byteOffset: end, line: line))
-            }
+            report.add(
+                XMLTVDiagnostic(kind: kind, recovery: Diagnostics.recoveryAtEnd(kind), byteOffset: end, line: line),
+                limit: options.diagnosticLimit)
         }
-        report.byteCount = end
+        report.decodedByteCount = end
+        report.inputByteCount = inputByteCount
     }
 
     private func located(_ error: XMLTVError) -> XMLTVError {

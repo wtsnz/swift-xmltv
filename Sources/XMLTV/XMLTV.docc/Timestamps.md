@@ -1,6 +1,6 @@
 # Timestamps
 
-How XMLTV writes times, and how ``XMLTVTimestamp`` keeps what was written.
+How XMLTV writes times, how ``XMLTVTimestamp`` keeps what was written, and how to show them.
 
 ## Overview
 
@@ -19,17 +19,74 @@ every real feed uses exactly that form. The format also allows:
 ``XMLTVTimestamp`` is a 16-byte value with four parts:
 
 - ``XMLTVTimestamp/secondsSince1970``: the UTC instant
-- ``XMLTVTimestamp/utcOffsetSeconds``: the offset the source wrote, so you can show local
-  broadcast time without a time zone database
+- ``XMLTVTimestamp/utcOffsetSeconds``: the offset the source wrote
 - ``XMLTVTimestamp/precision``: how many fields the source gave
 - ``XMLTVTimestamp/isTimeZoneKnown``: false when the zone name was not recognised
 
-Timestamps sort by instant, and ``XMLTVTimestamp/date`` converts to `Date`.
+``XMLTVTimestamp/date`` converts to `Date`, and `description` gives ISO 8601 in the written
+offset, to the source's precision: `2024-05-17T02:02:00+01:00`, or just `2024`.
 
-Precision matters for the `date` element and for partial times. `2024` means "some time in
-2024", not "midnight on 1 January 2024". The instant is the start of the period, and
-``XMLTVTimestamp/precision`` says how wide the period is. Converting straight to `Date` would
-lose that distinction.
+Precision matters for partial times. `2024` means "some time in 2024", not "midnight on 1
+January 2024". The instant is the start of the period, and ``XMLTVTimestamp/precision`` says how
+wide the period is. Converting straight to `Date` would lose that distinction. Programme start
+and stop times are nearly always complete. Production dates, in a programme's `<date>`, rarely
+are: ``Programme/date`` keeps the text, and ``Programme/productionDate`` parses it, keeping the
+precision. ``TVInfo/creationDate`` does the same for the date of the guide itself.
+
+### Showing times
+
+To show a time in the viewer's zone, format its `Date`, as for any other date:
+
+```swift
+let start = programme.start.date.formatted(date: .omitted, time: .shortened)   // "9:30 PM"
+```
+
+To show it as it was broadcast, use the offset the feed wrote, which ``XMLTVTimestamp/timeZone``
+gives as a `TimeZone`:
+
+```swift
+var style = Date.FormatStyle(date: .omitted, time: .shortened)
+style.timeZone = programme.start.timeZone ?? .gmt
+let broadcastTime = programme.start.date.formatted(style)
+```
+
+The offset is only as good as the feed. Many feeds write every time in UTC, `+0000`, and then
+the broadcast time shown is UTC, not the broadcaster's local time. A fixed offset also knows
+nothing about daylight saving: it is the offset at that instant, as written.
+
+For a partial time, show only what the source gave. `description` does that, in the offset the
+source wrote:
+
+```swift
+if let made = programme.productionDate {
+    print("Made in", made)   // "Made in 2024", not a time on 1 January
+}
+```
+
+Don't format a partial time's `date` in the viewer's zone. `2024` is stored as midnight UTC on
+1 January, which is still 2023 anywhere west of Greenwich.
+
+### Equality and ordering
+
+Two timestamps are equal only when every field is. The same instant written with different
+offsets, such as `20240101120000 +0000` and `20240101130000 +0100`, is two different values.
+That keeps two parsed programmes equal only when the feed said the same thing about them. To
+ask whether two times are the same moment, as in "does this programme end when the next one
+starts", use ``XMLTVTimestamp/isSameInstant(as:)``, or compare their `date`s.
+
+Ordering is by instant first, and the other fields only break ties, so sorting by
+`programme.start` sorts by time.
+
+### Making timestamps
+
+``XMLTVTimestamp/init(_:utcOffsetSeconds:)`` makes one from a `Date`, for tests, previews and
+comparisons. ``XMLTVTimestamp/init(_:policy:namedTimeZones:)`` parses XMLTV text with the
+parser's own rules, which is useful for values in other places, such as an extension element:
+
+```swift
+let start = try XMLTVTimestamp("20240101203000 +0100", policy: .strict)
+let lenient = try XMLTVTimestamp("20261113006000", policy: .lenient)   // minute 60, normalised
+```
 
 ### Zone names
 
@@ -43,7 +100,7 @@ is read as UTC with ``XMLTVTimestamp/isTimeZoneKnown`` set to false. If you know
 means, say so:
 
 ```swift
-var options = ParseOptions()
+var options = XMLTVOptions()
 options.namedTimeZones["IST"] = 19_800        // India, +05:30
 options.namedTimeZones["CET"] = 3_600
 let guide = try XMLTVDocument(contentsOf: url, options: options)
@@ -59,9 +116,4 @@ the instant linearly, so `20261113006000` becomes 01:00:00 on the same day, and 
 way. Leap seconds are not modelled. Dates are checked properly: 31 February is invalid, and so
 is 29 February in a non-leap year.
 
-### How it is fast
-
-The common form is decoded without `Calendar`, `DateFormatter` or any allocation. Two
-overlapping 8-byte loads cover the 14 digits. Each load is checked and converted with three
-multiply-and-shift steps, the method simdjson uses. Howard Hinnant's `days_from_civil` turns the
-date into a day count. The other forms take a slower, straightforward path.
+Timestamps are parsed without `Calendar` or `DateFormatter`; <doc:Performance> describes how.

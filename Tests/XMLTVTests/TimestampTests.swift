@@ -4,7 +4,7 @@ import Testing
 
 @Suite("Timestamps")
 struct TimestampTests {
-    func parse(_ text: String, zones: [String: Int32] = ParseOptions().namedTimeZones) -> TimestampParser.Outcome {
+    func parse(_ text: String, zones: [String: Int32] = XMLTVOptions().namedTimeZones) -> TimestampParser.Outcome {
         Array(text.utf8).withUnsafeBufferPointer { TimestampParser.parse($0, namedZones: zones) }
     }
 

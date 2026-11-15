@@ -33,7 +33,7 @@ enum Fixtures {
     }
 }
 
-func parse(_ xml: String, options: ParseOptions = ParseOptions()) throws(XMLTVError) -> XMLTVDocument {
+func parse(_ xml: String, options: XMLTVOptions = XMLTVOptions()) throws(XMLTVError) -> XMLTVDocument {
     try XMLTVDocument(data: Data(xml.utf8), options: options)
 }
 
@@ -46,28 +46,28 @@ func programme(_ children: String, attributes: String = #"start="20240101120000 
     "<programme \(attributes)>\(children)</programme>"
 }
 
-extension ParseOptions {
-    static func with(_ change: (inout ParseOptions) -> Void) -> ParseOptions {
-        var options = ParseOptions()
+extension XMLTVOptions {
+    static func with(_ change: (inout XMLTVOptions) -> Void) -> XMLTVOptions {
+        var options = XMLTVOptions()
         change(&options)
         return options
     }
 }
 
 /// Parses `bytes` with chunks starting at exactly `splits`, bypassing the size thresholds.
-func parse(_ bytes: [UInt8], splits: [Int], options: ParseOptions = ParseOptions()) throws(XMLTVError) -> DocumentDriver.Output {
+func parse(_ bytes: [UInt8], splits: [Int], options: XMLTVOptions = XMLTVOptions()) throws(XMLTVError) -> DocumentDriver.Output {
     try bytes.withUnsafeBufferPointer { buffer throws(XMLTVError) in
-        try DocumentDriver.parse(buffer, input: .init(encoding: .utf8), options: options, splits: [0] + splits + [bytes.count])
+        try DocumentDriver.parse(buffer, input: .init(encoding: .utf8, inputByteCount: bytes.count), options: options, splits: [0] + splits + [bytes.count])
     }
 }
 
 /// Streams `data` through ``XMLTVItems`` in chunks of `chunkSize` bytes.
-func streamItems(_ data: Data, chunkSize: Int, options: ParseOptions = ParseOptions()) async throws -> [XMLTVItem] {
+func streamItems(_ data: Data, chunkSize: Int, options: XMLTVOptions = XMLTVOptions()) async throws -> [XMLTVItem] {
     try await stream(data, chunkSize: chunkSize, options: options).items
 }
 
 /// Streams `data` through ``XMLTVItems`` in chunks of `chunkSize` bytes, keeping the report.
-func stream(_ data: Data, chunkSize: Int, options: ParseOptions = ParseOptions()) async throws -> (items: [XMLTVItem], report: ParseReport) {
+func stream(_ data: Data, chunkSize: Int, options: XMLTVOptions = XMLTVOptions()) async throws -> (items: [XMLTVItem], report: XMLTVReport) {
     let chunks = AsyncStream<Data> { continuation in
         var offset = 0
         while offset < data.count {
@@ -84,7 +84,7 @@ func stream(_ data: Data, chunkSize: Int, options: ParseOptions = ParseOptions()
 }
 
 /// Feeds `bytes` to a ``StreamDecoder`` directly, `chunkSize` bytes at a time.
-func streamDecode(_ bytes: [UInt8], chunkSize: Int, options: ParseOptions = ParseOptions()) throws(XMLTVError) -> (items: [XMLTVItem], report: ParseReport) {
+func streamDecode(_ bytes: [UInt8], chunkSize: Int, options: XMLTVOptions = XMLTVOptions()) throws(XMLTVError) -> (items: [XMLTVItem], report: XMLTVReport) {
     var decoder = StreamDecoder(options: options)
     var items: [XMLTVItem] = []
     var offset = 0

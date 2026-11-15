@@ -8,7 +8,7 @@ Which parts of XMLTV and XML the parser reads, and which it deliberately does no
 
 Every element and attribute in the
 [XMLTV DTD](https://github.com/XMLTV/xmltv/blob/master/xmltv.dtd) is decoded, including
-credits with images and URLs, reviews, images, subtitles, video and audio details, and the PDC,
+credits with images and URLs, reviews, images, subtitle tracks, video and audio details, and the PDC,
 VPS, ShowView and VideoPlus attributes.
 
 The DTD's ordering rules are not enforced:
@@ -42,10 +42,10 @@ where it lies in memory.
 
 ISO-8859-1 is decoded exactly, as XML requires: byte 0x80 is U+0080. Web browsers treat that
 label as Windows-1252, which maps byte 0x80 to €. If a feed declares ISO-8859-1 but was really
-written in Windows-1252, set ``ParseOptions/encoding`` to override the declaration:
+written in Windows-1252, set ``XMLTVOptions/encoding`` to override the declaration:
 
 ```swift
-var options = ParseOptions()
+var options = XMLTVOptions()
 options.encoding = .windows1252
 ```
 

@@ -39,7 +39,7 @@ final class FoundationBuilder: NSObject, XMLParserDelegate {
             ratingSystem = attributes["system"]
             isStarRating = name == "star-rating"
         case "episode-num": episodeSystem = attributes["system"] ?? "onscreen"
-        case "icon": if let src = attributes["src"] { current?.icons.append(Icon(source: src)) }
+        case "icon": if let src = attributes["src"] { current?.icons.append(Icon(src)) }
         case "director": creditRole = .director
         case "actor": creditRole = .actor
         case "writer": creditRole = .writer
@@ -57,15 +57,15 @@ final class FoundationBuilder: NSObject, XMLParserDelegate {
         switch name {
         case "programme": if let current { programmes.append(current) }; current = nil
         case "title": current?.titles.append(LocalizedText(value, language: language))
-        case "sub-title": current?.subTitles.append(LocalizedText(value, language: language))
+        case "sub-title": current?.episodeTitles.append(LocalizedText(value, language: language))
         case "desc": current?.descriptions.append(LocalizedText(value, language: language))
         case "category": current?.categories.append(LocalizedText(value, language: language))
         case "date": current?.date = value
-        case "episode-num": current?.episodeNumbers.append(Programme.EpisodeNumber(system: episodeSystem, value: value))
-        case "value" where isStarRating: current?.starRatings.append(Programme.StarRating(system: ratingSystem, value: value))
-        case "value": current?.ratings.append(Programme.Rating(system: ratingSystem, value: value))
+        case "episode-num": current?.episodeNumbers.append(Programme.EpisodeNumber(value, system: episodeSystem))
+        case "value" where isStarRating: current?.starRatings.append(Programme.StarRating(value, system: ratingSystem))
+        case "value": current?.ratings.append(Programme.Rating(value, system: ratingSystem))
         case "director", "actor", "writer", "producer", "presenter", "composer":
-            if let creditRole { current?.credits.append(Programme.Credit(role: creditRole, name: value)) }
+            if let creditRole { current?.credits.append(Programme.Credit(value, role: creditRole)) }
         default: break
         }
         text = ""

@@ -7,7 +7,8 @@ What the parser costs, where the time goes, and which options change it.
 ### Measurements
 
 Apple M4 Max with 12 performance and 4 efficiency cores, Swift 6.4, release build, warm page
-cache. Each figure is the median of 7 runs. Every figure builds the complete model, every DTD
+cache. Each figure is the median of 7 runs, except the Foundation baseline, which was run once.
+Every figure builds the complete model, every DTD
 field, unless the column says otherwise.
 
 | Feed | Size | ``XMLTVDocument`` | One thread | ``XMLTVReader`` | Keeping 1/64 of channels |
@@ -26,6 +27,9 @@ For comparison, on the 1.93 GB feed:
 The library is about 88 times faster than the first while doing more work, and 8.9 times faster
 than the second while building the whole model.
 
+All figures are for release builds. A debug build of an app runs the parser unoptimised, and
+the serial paths, ``XMLTVReader`` and ``XMLTVItems``, slow to about 1 MB/s. Measure in release.
+
 Run the benchmarks yourself with the harness in `Benchmarks/xmltv-bench`:
 
 ```
@@ -33,7 +37,23 @@ swift build -c release
 .build/release/xmltv-bench document path/to/guide.xml
 ```
 
-Its modes are `document`, `document-mmap`, `serial`, `reader`, `filter` and `foundation`.
+Its modes are `document`, `document-mmap`, `serial`, `reader`, `filter`, `foundation`,
+`chunks`, `bytes` and `schedule`.
+
+The other paths, on the 15.5 MB Plex feed unless noted:
+
+| Path | Time |
+|---|---:|
+| ``XMLTVDocument/init(contentsOf:options:)`` | 4.5 ms |
+| ``XMLTVItems`` over 64 KiB `Data` chunks | 35 ms, 0.44 GB/s |
+| ``XMLTVItems/init(bytes:chunkSize:options:)`` over `URLSession.AsyncBytes` of a file URL | 64 ms, 0.24 GB/s |
+| ``XMLTVSchedule`` from the parsed 78 MB US2 feed, 82,000 programmes | 17 ms |
+
+The streaming modes decode every record and discard it, as an importer would after storing it.
+Gathering single bytes into chunks is the cost of the `bytes` path: the byte loop is
+specialised for the caller's sequence and runs off the caller's actor, but it still handles
+every byte. The streaming paths are serial, which is why <doc:ChoosingAnEntryPoint> recommends
+downloading to a file.
 
 ### Where the time goes
 
@@ -71,8 +91,11 @@ trade-offs.
   allocation.
 - **Arrays sized from the previous programme.** Feeds are uniform, so a programme's ratings or
   categories array is usually allocated once at the right size instead of growing 1, 2, 4.
-- **Timestamps go straight to integers.** There is no `Calendar` and no `DateFormatter`. See
-  <doc:Timestamps>.
+- **Timestamps go straight to integers.** There is no `Calendar`, no `DateFormatter` and no
+  allocation. Two overlapping 8-byte loads cover the 14 digits of the common form, and each
+  load is checked and converted with three multiply-and-shift steps, the method simdjson uses.
+  Howard Hinnant's `days_from_civil` turns the date into a day count. The other forms take a
+  slower, straightforward path.
 - **Parallel chunks, verified.** The input is split at likely `<programme` positions, decoded on
   all cores, and then checked so that the result is exactly what a serial parse gives.
 
@@ -80,7 +103,7 @@ trade-offs.
 
 #### Filtering
 
-``ParseOptions/channelIDs`` and ``ParseOptions/timeWindow`` are tested before a programme's
+``XMLTVOptions/channelIDs`` and ``XMLTVOptions/timeWindow`` are tested before a programme's
 children are decoded. A rejected programme is skipped by a scan that jumps from one `<` to the
 next. It still checks the markup but builds nothing. When an app needs a few hundred channels
 out of a 30,000-channel guide, filtering is the biggest speed-up available: 15 GB/s instead of
@@ -88,16 +111,16 @@ out of a 30,000-channel guide, filtering is the biggest speed-up available: 15 G
 
 #### Parallelism
 
-``ParseOptions/Parallelism/automatic`` uses every core for inputs of 1 MiB or more.
-``ParseOptions/Parallelism/threads(_:)`` caps the number of worker threads, which is useful on a
-server that has other work to do. ``ParseOptions/Parallelism/serial`` uses one thread. The
+``XMLTVOptions/Parallelism/automatic`` uses every core for inputs of 1 MiB or more.
+``XMLTVOptions/Parallelism/threads(_:)`` caps the number of worker threads, which is useful on a
+server that has other work to do. ``XMLTVOptions/Parallelism/serial`` uses one thread. The
 output is the same either way.
 
 #### File access
 
-``ParseOptions/FileAccess/read``, the default, reads the file into memory. Files of 64 MiB or
+``XMLTVOptions/FileAccess/read``, the default, reads the file into memory. Files of 64 MiB or
 more are read in parallel slices, which makes this as fast as memory-mapping.
-``ParseOptions/FileAccess/memoryMapped`` saves the copy. But if another process truncates the
+``XMLTVOptions/FileAccess/memoryMapped`` saves the copy. But if another process truncates the
 file during the parse, the process crashes with SIGBUS. EPG grabbers often rewrite guides in
 place, so mapping is opt-in.
 

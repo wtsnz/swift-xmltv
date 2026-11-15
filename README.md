@@ -8,19 +8,26 @@ gigabytes per second, and recovers from the mistakes real feeds make without hid
 import XMLTV
 
 let guide = try XMLTVDocument(contentsOf: url)          // .xml or .xml.gz
-for programme in guide.programmes where programme.channelID == "BBC.One.uk" {
-    print(programme.start.date, programme.title ?? "")
+let schedule = XMLTVSchedule(guide)
+for channelID in schedule.channelIDs {
+    let now = schedule.current(channelID, at: .now)
+    let next = schedule.next(channelID, after: .now)
+    print(schedule.channel(channelID)?.displayName ?? channelID,
+          now?.programme.title ?? "-", "then", next?.programme.title ?? "-")
 }
 ```
 
-Swift 6.2 or later. macOS 15, iOS 18, tvOS 18, watchOS 11, visionOS 2. No dependencies beyond the
-system zlib.
+Swift 6.2.3 or later. macOS 15, iOS 18, tvOS 18, watchOS 11, visionOS 2. No dependencies beyond
+the system zlib.
 
 ```swift
-.package(url: "https://github.com/wtsnz/swift-xmltv.git", from: "0.1.0")
+.package(url: "https://github.com/wtsnz/swift-xmltv.git", .upToNextMinor(from: "0.1.0"))
 // then, in your target:
 .product(name: "XMLTV", package: "swift-xmltv")
 ```
+
+Until 1.0, minor releases may change the API and patch releases will not, so depend on
+`.upToNextMinor`.
 
 ## Three ways to read
 
@@ -29,25 +36,27 @@ system zlib.
 let guide = try XMLTVDocument(contentsOf: url)
 
 // Only some channels. Other programmes are skipped without being decoded.
-var options = ParseOptions()
-options.channelIDs = ["BBC.One.uk", "ITV1.uk"]
-let mine = try XMLTVDocument(contentsOf: url, options: options)
+let mine = try XMLTVDocument(contentsOf: url, options: XMLTVOptions(channelIDs: ["BBC.One.uk", "ITV1.uk"]))
 
 // One record at a time, in constant memory.
 var reader = try XMLTVReader(contentsOf: url)
 while let item = try reader.next() { … }
 
 // From a download, as the bytes arrive.
-var items = XMLTVItems(chunks: downloadChunks).makeAsyncIterator()
-while let item = try await items.next() { … }
+let (bytes, _) = try await URLSession.shared.bytes(from: guideURL)
+let items = XMLTVItems(bytes: bytes)
+for try await item in items { … }
+if items.report?.isTruncated == true { … }               // the download was cut off
 ```
 
 All three produce identical records and reports. The tests check this at every chunk size down
-to one byte.
+to one byte. For a guide on the network, downloading to a file and using `XMLTVDocument` is
+simpler and faster still.
 
 ## Speed
 
 Apple M4 Max, release build, median of 7 runs. Every figure builds the complete model.
+The Foundation baseline below was run once, as it takes 39 seconds.
 
 | Feed | Size | `XMLTVDocument` | One thread | Keeping 1/64 of channels |
 |---|---:|---:|---:|---:|
@@ -68,9 +77,14 @@ nothing but counting elements. More measurements, and what makes it fast, are in
 - **Bad content is recovered by default.** Minute-60 timestamps, `<rating>12</rating>` with no
   `<value>`, invalid UTF-8, missing attributes and cut-off downloads are handled by fixed rules.
   Each recovery is reported as a diagnostic with a line number. `.strict` mode throws instead.
+- **Every recovery is counted.** The report says how many programmes were dropped and how many
+  of each problem occurred, and errors and diagnostics read as sentences for people.
 - **Times keep what the source wrote.** An `XMLTVTimestamp` holds the instant, the written
   offset and the precision, so `2024` stays distinct from midnight on 1 January. Ambiguous zone
   names such as `IST` are never guessed.
+- **The data stays what the feed said.** Missing stop times are inferred, and exact duplicates
+  dropped, by `XMLTVSchedule`, not written into the programmes. `Programme` is neither `Identifiable` nor `Codable`, because
+  feeds give broadcasts no identity and the downloaded file is the better cache.
 - **Encodings and compression are automatic.** UTF-8, UTF-16, ISO-8859-1, ISO-8859-15,
   Windows-1252, and gzip, detected from the bytes.
 - **Some XML features are unsupported.** DTD-declared entities, namespaces, XML 1.1 and other
@@ -82,10 +96,10 @@ The DocC catalog in `Sources/XMLTV/XMLTV.docc` has the API reference and these a
 
 - [Getting started](Sources/XMLTV/XMLTV.docc/GettingStarted.md)
 - [Choosing an entry point](Sources/XMLTV/XMLTV.docc/ChoosingAnEntryPoint.md), covering memory,
-  latency and cores
+  latency, downloads, and use from tasks and actors
 - [Errors and diagnostics](Sources/XMLTV/XMLTV.docc/ErrorsAndDiagnostics.md), with every
   recovery rule
-- [Timestamps](Sources/XMLTV/XMLTV.docc/Timestamps.md) and zone names
+- [Timestamps](Sources/XMLTV/XMLTV.docc/Timestamps.md): showing times, and zone names
 - [Format support](Sources/XMLTV/XMLTV.docc/FormatSupport.md), listing which parts of XMLTV and
   XML are read
 - [Performance](Sources/XMLTV/XMLTV.docc/Performance.md)

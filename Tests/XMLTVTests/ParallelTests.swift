@@ -101,7 +101,7 @@ struct ParallelTests {
     }
 
     @Test func filtersAreAppliedIdenticallyInEveryChunk() throws {
-        let options = ParseOptions.with { $0.channelIDs = ["c1", "c3", "nested"] }
+        let options = XMLTVOptions.with { $0.channelIDs = ["c1", "c3", "nested"] }
         let serial = try parse(Self.adversarial, splits: [], options: options)
         #expect(Set(serial.programmes.map(\.channelID)) == ["c1", "c3"])
         expectEqual(try parse(Self.adversarial, splits: Self.candidateSplits, options: options), serial, "filtered")

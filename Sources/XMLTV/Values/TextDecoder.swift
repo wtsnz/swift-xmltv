@@ -125,7 +125,12 @@ struct TextDecoder {
         _ bytes: UnsafeBufferPointer<UInt8>, at offset: Int, diagnostics: inout Diagnostics
     ) throws(XMLTVError) -> (value: String, isCacheable: Bool) {
         let problem = TextValidation.firstProblem(in: bytes)
-        if let problem { try diagnostics.report(problem, at: offset) }
+        if let problem {
+            // Invalid UTF-8 is replaced as the string is made. A forbidden character is kept.
+            for kind in TextValidation.problems(in: bytes, first: problem) {
+                try diagnostics.report(kind, kind == .invalidUTF8 ? .repaired : .keptAsWritten, at: offset)
+            }
+        }
         return (String(decoding: bytes, as: UTF8.self), problem == nil)
     }
 
@@ -178,7 +183,7 @@ struct TextDecoder {
         }
         scratch.removeLast(range.count &- written)
         for offset in unsupported {
-            try diagnostics.report(.unsupportedEntity(TextDecoder.referenceText(at: offset, end: range.end, in: scanner)), at: offset)
+            try diagnostics.report(.unsupportedEntity(TextDecoder.referenceText(at: offset, end: range.end, in: scanner)), .keptAsWritten, at: offset)
         }
     }
 

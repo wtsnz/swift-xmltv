@@ -7,7 +7,11 @@ extension Programme {
     public struct Credit: Sendable, Hashable {
         /// The part a person plays in making the programme. Credits keep the order of the source,
         /// which XMLTV defines as billing order.
-        public enum Role: UInt8, Sendable, Hashable, CaseIterable {
+        ///
+        /// The raw value is the element name, such as `"director"`. New roles may be added in a
+        /// minor release, as the DTD has added them before, so a `switch` needs `@unknown default`.
+        @nonexhaustive
+        public enum Role: String, Sendable, Hashable, CaseIterable {
             case director, actor, writer, adapter, producer, composer, editor, presenter, commentator, guest
         }
 
@@ -25,7 +29,7 @@ extension Programme {
         /// Pages about the person, such as a profile in a film database.
         public var urls: [URLReference]
 
-        public init(role: Role, name: String, character: String? = nil, isGuest: Bool = false, images: [Image] = [], urls: [URLReference] = []) {
+        public init(_ name: String, role: Role, character: String? = nil, isGuest: Bool = false, images: [Image] = [], urls: [URLReference] = []) {
             self.role = role
             self.name = name
             self.character = character
@@ -44,7 +48,7 @@ extension Programme {
         /// Images for the classification, such as a badge.
         public var icons: [Icon]
 
-        public init(system: String? = nil, value: String, icons: [Icon] = []) {
+        public init(_ value: String, system: String? = nil, icons: [Icon] = []) {
             self.system = system
             self.value = value
             self.icons = icons
@@ -55,26 +59,42 @@ extension Programme {
     public struct StarRating: Sendable, Hashable {
         /// Who gave the score, when the source says.
         public var system: String?
+        /// A score as numbers: `stars` out of `maximum`.
+        public struct Score: Sendable, Hashable {
+            /// The stars given, such as `3.5`.
+            public var stars: Double
+            /// The best possible score, such as `5`. Always greater than zero.
+            public var maximum: Double
+
+            public init(stars: Double, maximum: Double) {
+                self.stars = stars
+                self.maximum = maximum
+            }
+
+            /// The score as a fraction of the maximum, from 0 to 1.
+            public var fraction: Double { stars / maximum }
+        }
+
         /// The score exactly as written. See ``score`` for the numbers.
         public var value: String
         /// Images for the score, such as rows of stars.
         public var icons: [Icon]
 
-        public init(system: String? = nil, value: String, icons: [Icon] = []) {
+        public init(_ value: String, system: String? = nil, icons: [Icon] = []) {
             self.system = system
             self.value = value
             self.icons = icons
         }
 
         /// The parsed `stars / maximum`, or nil when the value does not have that form.
-        public var score: (stars: Double, maximum: Double)? {
+        public var score: Score? {
             let parts = value.split(separator: "/", omittingEmptySubsequences: false)
             guard parts.count == 2,
                   let stars = Double(parts[0].trimmingCharacters(in: .whitespaces)),
                   let maximum = Double(parts[1].trimmingCharacters(in: .whitespaces)),
                   maximum > 0, stars >= 0, stars <= maximum
             else { return nil }
-            return (stars, maximum)
+            return Score(stars: stars, maximum: maximum)
         }
     }
 
@@ -91,7 +111,7 @@ extension Programme {
         /// The `lang` attribute of the review.
         public var language: String?
 
-        public init(type: String, value: String, source: String? = nil, reviewer: String? = nil, language: String? = nil) {
+        public init(_ value: String, type: String, source: String? = nil, reviewer: String? = nil, language: String? = nil) {
             self.type = type
             self.value = value
             self.source = source
@@ -132,8 +152,9 @@ extension Programme {
         }
     }
 
-    /// A `<subtitles>` stream.
-    public struct Subtitles: Sendable, Hashable {
+    /// A `<subtitles>` element: one way the programme is subtitled or signed. Not to be confused
+    /// with ``Programme/episodeTitles``, which holds `<sub-title>`.
+    public struct SubtitleTrack: Sendable, Hashable {
         /// How the subtitles are delivered: `teletext`, `onscreen` or `deaf-signed`.
         public var type: String?
         /// The subtitle language.
@@ -182,9 +203,12 @@ extension Programme {
     ///
     /// The classification attributes keep the text written in the source, so values the DTD
     /// doesn't list survive.
-    public struct Image: Sendable, Hashable {
-        /// The image URL, as written.
-        public var url: String
+    ///
+    /// Inside an `extension Programme`, the bare name `Image` means this type rather than
+    /// SwiftUI's. Write `SwiftUI.Image` there.
+    public struct Image: Sendable, Hashable, Codable {
+        /// The image URL as written. See ``url`` for a `URL`.
+        public var urlString: String
         /// The `type` attribute: `poster`, `backdrop`, `still`, `person` or `character`.
         public var type: String?
         /// The `size` attribute: `1` (small), `2` (medium) or `3` (large).
@@ -194,12 +218,16 @@ extension Programme {
         /// The `system` attribute, naming the source of the image.
         public var system: String?
 
-        public init(url: String, type: String? = nil, size: String? = nil, orientation: String? = nil, system: String? = nil) {
-            self.url = url
+        public init(_ urlString: String, type: String? = nil, size: String? = nil, orientation: String? = nil, system: String? = nil) {
+            self.urlString = urlString
             self.type = type
             self.size = size
             self.orientation = orientation
             self.system = system
         }
+
+        /// The image URL, as `URL(string:)` reads ``urlString``. That percent-encodes most text
+        /// rather than rejecting it, so a non-nil result is not proof of a usable address.
+        public var url: URL? { URL(string: urlString) }
     }
 }

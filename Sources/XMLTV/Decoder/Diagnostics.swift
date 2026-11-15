@@ -8,7 +8,7 @@
 /// - Abandoning a partly decoded record, as the streaming driver does before a retry, is just a
 ///   matter of dropping what is pending.
 struct Diagnostics {
-    let policy: ParseOptions.Policy
+    let policy: XMLTVOptions.Policy
     let sampleLimit: Int
     /// Whether to keep every committed offset. The parallel driver needs them to count exactly the
     /// diagnostics inside the part of a chunk it keeps. The streaming driver does not, and keeping
@@ -19,10 +19,15 @@ struct Diagnostics {
     private(set) var samples: [XMLTVDiagnostic] = []
     /// The offset of every committed diagnostic, ascending, when `recordsOffsets` is set.
     private(set) var offsets: [Int] = []
-    private(set) var count = 0
+    /// The code and recovery of every committed diagnostic, parallel to `offsets`, so the
+    /// parallel driver can count the ones in the part of a chunk it keeps.
+    private(set) var outcomes: [(code: XMLTVError.Code, recovery: XMLTVDiagnostic.Recovery)] = []
+    /// Counts of every committed diagnostic.
+    private(set) var totals = XMLTVReport()
+    var count: Int { totals.diagnosticCount }
     private var pending: [XMLTVDiagnostic] = []
 
-    init(policy: ParseOptions.Policy, sampleLimit: Int, recordsOffsets: Bool) {
+    init(policy: XMLTVOptions.Policy, sampleLimit: Int, recordsOffsets: Bool) {
         self.policy = policy
         self.sampleLimit = sampleLimit
         self.recordsOffsets = recordsOffsets
@@ -32,9 +37,9 @@ struct Diagnostics {
     var pendingCount: Int { pending.count }
 
     @inline(__always)
-    mutating func report(_ kind: XMLTVError.Kind, at offset: Int) throws(XMLTVError) {
+    mutating func report(_ kind: XMLTVError.Kind, _ recovery: XMLTVDiagnostic.Recovery, at offset: Int) throws(XMLTVError) {
         if policy == .strict { throw XMLTVError(kind, byteOffset: offset) }
-        pending.append(XMLTVDiagnostic(kind: kind, byteOffset: offset, line: 0))
+        pending.append(XMLTVDiagnostic(kind: kind, recovery: recovery, byteOffset: offset, line: 0))
     }
 
     /// Commits the pending diagnostics in document order.
@@ -48,11 +53,20 @@ struct Diagnostics {
                 .map(\.element)
         }
         for diagnostic in pending {
-            count += 1
-            if recordsOffsets { offsets.append(diagnostic.byteOffset) }
+            totals.count(diagnostic.kind.code, diagnostic.recovery)
+            if recordsOffsets {
+                offsets.append(diagnostic.byteOffset)
+                outcomes.append((diagnostic.kind.code, diagnostic.recovery))
+            }
             if samples.count < sampleLimit { samples.append(diagnostic) }
         }
         pending.removeAll(keepingCapacity: true)
+    }
+
+    /// What a problem found at the end of the input cost. These are reported after every record,
+    /// at the end of the document.
+    static func recoveryAtEnd(_ kind: XMLTVError.Kind) -> XMLTVDiagnostic.Recovery {
+        kind == .invalidEncoding ? .repaired : .restOfInputIgnored
     }
 
     mutating func discardPending() {

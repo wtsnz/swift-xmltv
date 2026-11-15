@@ -49,7 +49,7 @@ struct XMLTVDecoder {
     var expectedCounts = ExpectedCounts()
 
     let namedTimeZones: [String: Int32]
-    private let channelIDs: Set<String>?
+    let channelIDs: Set<String>?
     private let timeWindow: Range<Int64>?
 
     /// The raw `channel` attribute of the previous programme and what it decoded to. Programmes
@@ -57,7 +57,7 @@ struct XMLTVDecoder {
     private var lastChannelRaw: [UInt8] = []
     private var lastChannel = (id: "", isSelected: false)
 
-    init(scanner: XMLScanner, phase: Phase, options: ParseOptions, recordsDiagnosticOffsets: Bool) {
+    init(scanner: XMLScanner, phase: Phase, options: XMLTVOptions, recordsDiagnosticOffsets: Bool) {
         self.scanner = scanner
         self.phase = phase
         self.diagnostics = Diagnostics(
@@ -136,7 +136,7 @@ struct XMLTVDecoder {
                 default:
                     // Typically a second document appended to the first. Reported once; the rest
                     // of the input is ignored.
-                    try diagnostics.report(.contentAfterRoot, at: scanner.tokenStart)
+                    try diagnostics.report(.contentAfterRoot, .restOfInputIgnored, at: scanner.tokenStart)
                     phase = .finished
                     scanner.position = scanner.end
                     return .end
@@ -152,7 +152,9 @@ struct XMLTVDecoder {
     private mutating func prolog(_ token: XMLToken) throws(XMLTVError) -> Bool {
         switch token {
         case .text(let range, _):
-            guard isWhitespace(range) else { throw scanner.malformed("text before the root element") }
+            // Text where the root should be means this is not XML at all, typically a JSON or
+            // plain-text error body from a server.
+            guard isWhitespace(range) else { throw XMLTVError(.notXMLTV, byteOffset: range.start) }
             return false
         case .startTag(let name, let isEmpty):
             guard XMLTVElement(scanner.pointer(to: name)) == .tv else {
@@ -187,12 +189,13 @@ struct XMLTVDecoder {
 
     private mutating func decodeChannel(_ name: ByteRange, isEmpty: Bool) throws(XMLTVError) -> Channel? {
         guard let idAttribute = scanner.attribute("id") else {
-            try diagnostics.report(.missingAttribute(element: "channel", attribute: "id"), at: elementStart)
+            try diagnostics.report(.missingAttribute(element: "channel", attribute: "id"), .channelDropped, at: elementStart)
             try skipContent(of: name, isEmpty: isEmpty)
             return nil
         }
         let id = try string(idAttribute)
         if let channelIDs, !channelIDs.contains(id) {
+            diagnostics.discardPending()   // any repair in the excluded channel's id
             try skipContent(of: name, isEmpty: isEmpty)
             return nil
         }
@@ -215,7 +218,7 @@ struct XMLTVDecoder {
                 case .endTag(let closing):
                     try expectEndTag(closing, matching: name)
                     if channel.displayNames.isEmpty {
-                        try diagnostics.report(.missingElement(element: "channel", child: "display-name"), at: elementStart)
+                        try diagnostics.report(.missingElement(element: "channel", child: "display-name"), .keptAsWritten, at: elementStart)
                     }
                     return channel
                 case .text, .cdata:
@@ -225,13 +228,13 @@ struct XMLTVDecoder {
                 }
             }
         }
-        try diagnostics.report(.missingElement(element: "channel", child: "display-name"), at: elementStart)
+        try diagnostics.report(.missingElement(element: "channel", child: "display-name"), .keptAsWritten, at: elementStart)
         return channel
     }
 
     // MARK: Programme selection
 
-    /// The programme's channel ID, and whether ``ParseOptions/channelIDs`` selects it.
+    /// The programme's channel ID, and whether ``XMLTVOptions/channelIDs`` selects it.
     @inline(__always)
     mutating func channel(_ attribute: RawAttribute) throws(XMLTVError) -> (id: String, isSelected: Bool) {
         let raw = scanner.pointer(to: attribute.value)
@@ -252,7 +255,7 @@ struct XMLTVDecoder {
         return decoded
     }
 
-    /// Whether ``ParseOptions/timeWindow`` may select a programme. Programmes whose times cannot
+    /// Whether ``XMLTVOptions/timeWindow`` may select a programme. Programmes whose times cannot
     /// be compared exactly are kept.
     @inline(__always)
     func isInTimeWindow(start: XMLTVTimestamp, stop: XMLTVTimestamp?) -> Bool {
@@ -327,11 +330,11 @@ struct XMLTVDecoder {
         var icon: Icon?
         if let source = scanner.attribute("src") {
             icon = Icon(
-                source: try string(source),
+                try string(source),
                 width: try scanner.attribute("width").flatMap { attribute throws(XMLTVError) in try integer(attribute, element: "icon") },
                 height: try scanner.attribute("height").flatMap { attribute throws(XMLTVError) in try integer(attribute, element: "icon") })
         } else {
-            try diagnostics.report(.missingAttribute(element: "icon", attribute: "src"), at: start)
+            try diagnostics.report(.missingAttribute(element: "icon", attribute: "src"), .valueDropped, at: start)
         }
         try skipContent(of: name, isEmpty: isEmpty)
         return icon
@@ -343,7 +346,7 @@ struct XMLTVDecoder {
     }
 
     mutating func image(_ name: ByteRange, isEmpty: Bool) throws(XMLTVError) -> Programme.Image {
-        var image = Programme.Image(url: "")
+        var image = Programme.Image("")
         for index in 0..<scanner.attributeCount {
             let attribute = scanner.attribute(at: index)
             if scanner.bytes(attribute.name, equal: "type") { image.type = try string(attribute) }
@@ -351,7 +354,7 @@ struct XMLTVDecoder {
             else if scanner.bytes(attribute.name, equal: "orient") { image.orientation = try string(attribute) }
             else if scanner.bytes(attribute.name, equal: "system") { image.system = try string(attribute) }
         }
-        image.url = try textContent(of: name, isEmpty: isEmpty)
+        image.urlString = try textContent(of: name, isEmpty: isEmpty)
         return image
     }
 
@@ -364,7 +367,11 @@ struct XMLTVDecoder {
     }
 
     @inline(__always)
-    mutating func timestamp(_ attribute: RawAttribute) throws(XMLTVError) -> XMLTVTimestamp? {
+    /// Parses a timestamp attribute. `ifInvalid` says what an unparseable value costs: by default
+    /// only the value, but for a programme's `start`, the whole programme.
+    mutating func timestamp(
+        _ attribute: RawAttribute, ifInvalid recovery: XMLTVDiagnostic.Recovery = .valueDropped
+    ) throws(XMLTVError) -> XMLTVTimestamp? {
         let zones = namedTimeZones
         let outcome = try text.withAttributeBytes(attribute, in: scanner, diagnostics: &diagnostics) {
             TimestampParser.parse($0, namedZones: zones)
@@ -373,13 +380,13 @@ struct XMLTVDecoder {
         case .valid(let timestamp):
             return timestamp
         case .normalized(let timestamp):
-            try diagnostics.report(.invalidTimestamp(scanner.string(attribute.value)), at: attribute.value.start)
+            try diagnostics.report(.invalidTimestamp(scanner.string(attribute.value)), .repaired, at: attribute.value.start)
             return timestamp
         case .unresolvedZone(let timestamp, let zone):
-            try diagnostics.report(.unresolvedTimeZone(zone), at: attribute.value.start)
+            try diagnostics.report(.unresolvedTimeZone(zone), .assumedDefault, at: attribute.value.start)
             return timestamp
         case .invalid:
-            try diagnostics.report(.invalidTimestamp(scanner.string(attribute.value)), at: attribute.value.start)
+            try diagnostics.report(.invalidTimestamp(scanner.string(attribute.value)), recovery, at: attribute.value.start)
             return nil
         }
     }
@@ -387,7 +394,7 @@ struct XMLTVDecoder {
     mutating func integer(_ attribute: RawAttribute, element: String) throws(XMLTVError) -> Int? {
         let value = try text.withAttributeBytes(attribute, in: scanner, diagnostics: &diagnostics) { Self.integer($0) }
         if value == nil {
-            try diagnostics.report(.invalidValue(element: element, value: scanner.string(attribute.value)), at: attribute.value.start)
+            try diagnostics.report(.invalidValue(element: element, value: scanner.string(attribute.value)), .valueDropped, at: attribute.value.start)
         }
         return value
     }

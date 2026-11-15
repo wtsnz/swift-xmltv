@@ -4,11 +4,8 @@ The choices that shape the library, what each one costs, and the evidence behind
 
 ## Overview
 
-Two engineers designed this library independently, each with a working prototype, and then
-critiqued each other's designs against eight real feeds. After it was built, both reviewed the
-code. The decisions below are where they disagreed, or where the obvious choice turned out to
-be wrong. Each gives the alternative that was rejected, so you can judge whether the trade-off
-suits you.
+Each decision below gives the alternative that was rejected and the evidence, mostly from
+eight real feeds, so you can judge whether the trade-off suits you.
 
 ### Owned values, not views into the input
 
@@ -22,8 +19,8 @@ keeps the whole input buffer alive, which could be gigabytes. Almost every real 
 the strings out anyway, into a database, a UI or JSON, so views would move the cost rather than
 remove it.
 
-The library keeps the fast path where it helps: filtering. ``ParseOptions/channelIDs`` and
-``ParseOptions/timeWindow`` are checked against the raw bytes, so rejected programmes never
+The library keeps the fast path where it helps: filtering. ``XMLTVOptions/channelIDs`` and
+``XMLTVOptions/timeWindow`` are checked against the raw bytes, so rejected programmes never
 become values.
 
 ### A purpose-built XML scanner
@@ -76,8 +73,7 @@ then committed in offset order. This sounds like bookkeeping, but three things d
 - A streaming retry can abandon half a record and drop exactly its diagnostics.
 - Parallel, serial and streaming parses produce identical reports.
 
-That last point is tested at every chunk size. The code review found four ways the reports
-could differ before this design was adopted.
+That last point is tested at every chunk size.
 
 ### Parallel parsing by guessing and checking
 
@@ -140,14 +136,14 @@ Memory-mapping avoids a copy, but if another process truncates the file mid-pars
 process crashes with SIGBUS, and that cannot be caught. EPG grabbers commonly rewrite guides in
 place, as in `tv_grab_xx > guide.xml`. Reading in parallel slices made the copy cheap enough that
 the default path is as fast as mapping. Mapping remains available as
-``ParseOptions/FileAccess/memoryMapped`` for files that are replaced atomically.
+``XMLTVOptions/FileAccess/memoryMapped`` for files that are replaced atomically.
 
 ### Exact ISO-8859-1
 
 XML defines ISO-8859-1 exactly: byte 0x80 is U+0080. Browsers decode the label as Windows-1252
 instead, and so did the first design. The library follows XML, because a parser that disagrees
 with every other XML tool about the same bytes is worse than one that occasionally needs an
-override. Feeds that are mislabelled can set ``ParseOptions/encoding``.
+override. Feeds that are mislabelled can set ``XMLTVOptions/encoding``.
 
 ### Zone names are never guessed
 
@@ -170,10 +166,50 @@ background task. A slow consumer applies backpressure, and there is nothing to c
 
 ### Typed errors where only the parser can fail
 
-The synchronous entry points use `throws(XMLTVError)`, so you can switch over every
-``XMLTVError/Kind``. ``XMLTVItems`` uses untyped `throws`, because its chunk sequence can fail
-with any error, and that error should arrive unchanged. A network failure should not be
-disguised as bad XML.
+The synchronous entry points use `throws(XMLTVError)`, so a `catch` around them gets an
+``XMLTVError`` without a cast. ``XMLTVItems`` uses untyped `throws`, because its chunk
+sequence can fail with any error, and that error should arrive unchanged. A network failure
+should not be disguised as bad XML.
+
+### Open enums
+
+``XMLTVError/Kind``, ``XMLTVDiagnostic/Recovery``, ``XMLTVEncoding``, ``Programme/Credit/Role``
+and the option enums are `@nonexhaustive`, so a `switch` outside the library needs
+`@unknown default`. Each is a list the library expects to grow: a new recovery rule adds a
+kind, and the DTD has added credit roles before. Closed enums would make every such addition
+a major version for every app that switches over them.
+
+The cost is that the library needs Swift 6.2.3, the first release with the attribute, and that
+callers write one more line. ``XMLTVTimestamp/Precision`` stays closed, because the format
+cannot gain a seventh precision.
+
+### Programmes have no identity
+
+XMLTV gives a broadcast no identifier, and no combination of fields is unique in real feeds.
+In the 42,000-programme UK feed, 401 programmes are exact copies of another. In the 1.93 GB
+merged feed, 26,414 programmes share their channel, start and clump index with at least one
+other, and 200 channel IDs are declared twice. An `Identifiable` conformance built from
+those fields would give SwiftUI duplicate IDs, and one built from position would change on
+every refresh while looking stable.
+
+So ``Programme`` is not `Identifiable`, and the library promises it never will be. That
+promise matters: if the library added the conformance later, Swift would silently prefer it
+over one an app had declared, and the app's identities would change without an error.
+``XMLTVSchedule/Entry`` does have an identity, because within a schedule one can be made
+honestly: the channel, the start instant, and the entry's position among those that start at
+that instant. Exact duplicates are dropped first, so the position separates the members of a
+clump and overlapping records, and the same programme keeps its ID when a newer copy of the
+feed is parsed. A position in the document, the other candidate, changes whenever an earlier
+programme is added or removed, which happens on every refresh.
+
+### A schedule, not inferred stop times
+
+XMLTV lets a feed leave out `stop`, meaning "until the next programme". None of the eight test
+feeds does, but some grabbers do. The parser could fill it in,
+but then ``Programme/stop`` would no longer say what the feed said, and the answer depends on
+order, overlaps and clumps, which only a view of the whole channel can see. ``XMLTVSchedule``
+does that work separately and marks the result as inferred, so the parsed data stays a faithful
+record of the source.
 
 ### What was left out, and why
 
@@ -183,10 +219,16 @@ disguised as bad XML.
   feeds that have not been seen in practice.
 - **Keeping unknown elements.** They are skipped. Keeping them would need a generic tree type in
   the public API.
-- **`Codable` conformance.** It would freeze the encoded layout of the rare-field box before the
-  API is settled.
+- **`Codable` on `Programme` and `Channel`.** Re-parsing the downloaded `.xml.gz` is several
+  times faster than decoding the same records from JSON, and the file is a fraction of the
+  size, so the library recommends caching the file. A conformance would also be a second
+  compatibility contract, and, like `Identifiable`, would silently replace one an app had
+  written. The small values apps embed in their own records, such as ``XMLTVTimestamp``,
+  ``LocalizedText``, ``Icon`` and ``URLReference``, are `Codable`.
 - **Parallel gzip.** The deflate format does not split cleanly. Decompression stays the limit
   for `.xml.gz`.
 - **A borrowed-view API.** See the first section.
 
-None of these rules anything out later. Each can be added without breaking the current API.
+Apart from `Codable` on records, none of these is ruled out. Most could be added without
+breaking the current API. More encodings would add ``XMLTVEncoding`` cases, which its
+`@nonexhaustive` attribute allows.

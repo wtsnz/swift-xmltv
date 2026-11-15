@@ -20,24 +20,26 @@ enum DocumentInput {
         /// input in the source encoding. They are reported as diagnostics at the end of the
         /// document.
         var problems: [XMLTVError.Kind] = []
+        /// The size of the input before decompression and transcoding.
+        var inputByteCount = 0
     }
 
     static func withUTF8<R>(
-        contentsOf url: URL, options: ParseOptions,
+        contentsOf url: URL, options: XMLTVOptions,
         _ body: (UnsafeBufferPointer<UInt8>, InputInfo) throws(XMLTVError) -> R
     ) throws(XMLTVError) -> R {
-        guard url.isFileURL else { throw XMLTVError(.io(operation: "open \(url)", errno: EINVAL)) }
+        guard url.isFileURL else { throw XMLTVError(.notAFileURL(url.absoluteString)) }
         let descriptor = open(url.path, O_RDONLY | O_CLOEXEC)
-        guard descriptor >= 0 else { throw XMLTVError(.io(operation: "open \(url.path)", errno: errno)) }
+        guard descriptor >= 0 else { throw XMLTVError(.io(operation: "open", path: url.path, errno: errno)) }
         defer { close(descriptor) }
 
         var info = stat()
-        guard fstat(descriptor, &info) == 0 else { throw XMLTVError(.io(operation: "stat \(url.path)", errno: errno)) }
+        guard fstat(descriptor, &info) == 0 else { throw XMLTVError(.io(operation: "stat", path: url.path, errno: errno)) }
         let size = Int(info.st_size)
 
         if options.fileAccess == .memoryMapped && size > 0 {
             guard let mapping = mmap(nil, size, PROT_READ, MAP_PRIVATE, descriptor, 0), mapping != MAP_FAILED else {
-                throw XMLTVError(.io(operation: "mmap \(url.path)", errno: errno))
+                throw XMLTVError(.io(operation: "mmap", path: url.path, errno: errno))
             }
             defer { munmap(mapping, size) }
             _ = madvise(mapping, size, MADV_WILLNEED)
@@ -50,7 +52,7 @@ enum DocumentInput {
     }
 
     static func withUTF8<R>(
-        data: Data, options: ParseOptions,
+        data: Data, options: XMLTVOptions,
         _ body: (UnsafeBufferPointer<UInt8>, InputInfo) throws(XMLTVError) -> R
     ) throws(XMLTVError) -> R {
         // `Data.withUnsafeBytes` rethrows untyped errors. The error is carried out in a Result
@@ -69,7 +71,7 @@ enum DocumentInput {
     /// Decompresses and transcodes as needed, then calls `body` with UTF-8 bytes with any BOM
     /// removed.
     static func withUTF8<R>(
-        _ raw: UnsafeBufferPointer<UInt8>, options: ParseOptions,
+        _ raw: UnsafeBufferPointer<UInt8>, options: XMLTVOptions,
         _ body: (UnsafeBufferPointer<UInt8>, InputInfo) throws(XMLTVError) -> R
     ) throws(XMLTVError) -> R {
         if GzipInflater.isGzip(raw) {
@@ -78,19 +80,22 @@ enum DocumentInput {
             if let problem, options.policy == .strict { throw XMLTVError(problem) }
             return try withUTF8(inflated.bytes, options: options) { bytes, info throws(XMLTVError) in
                 var info = info
-                if let problem { info.problems.append(problem) }
+                info.inputByteCount = raw.count
+                // Compression problems come before encoding ones, as the streaming driver finds
+                // them, so both report the same order.
+                if let problem { info.problems.insert(problem, at: 0) }
                 return try body(bytes, info)
             }
         }
 
         let (encoding, bomLength) = try EncodingDetector.detect(raw, override: options.encoding)
         let content = UnsafeBufferPointer(rebasing: raw[bomLength...])
-        if encoding == .utf8 { return try body(content, InputInfo(encoding: .utf8)) }
+        if encoding == .utf8 { return try body(content, InputInfo(encoding: .utf8, inputByteCount: raw.count)) }
 
         var transcoder = Transcoder(encoding)
         var output = ByteBuffer(capacity: content.count + content.count / 4)
         transcoder.transcode(content, into: &output, isFinal: true)
-        var info = InputInfo(encoding: encoding)
+        var info = InputInfo(encoding: encoding, inputByteCount: raw.count)
         if transcoder.replacedInvalidInput {
             if options.policy == .strict { throw XMLTVError(.invalidEncoding) }
             info.problems.append(.invalidEncoding)
@@ -123,11 +128,11 @@ enum DocumentInput {
                 }
             }
             if let error = failures.value.first(where: { $0 != 0 }) {
-                throw XMLTVError(.io(operation: "read \(path)", errno: error))
+                throw XMLTVError(.io(operation: "read", path: path, errno: error))
             }
             buffer.commit(sizeHint)
             guard lseek(descriptor, off_t(sizeHint), SEEK_SET) >= 0 else {
-                throw XMLTVError(.io(operation: "seek \(path)", errno: errno))
+                throw XMLTVError(.io(operation: "seek", path: path, errno: errno))
             }
         }
         while true {
@@ -138,7 +143,7 @@ enum DocumentInput {
             if n == 0 { return buffer }
             if n < 0 {
                 if errno == EINTR { continue }
-                throw XMLTVError(.io(operation: "read \(path)", errno: errno))
+                throw XMLTVError(.io(operation: "read", path: path, errno: errno))
             }
             buffer.commit(n)
         }

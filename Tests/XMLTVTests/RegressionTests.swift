@@ -7,7 +7,7 @@ import Testing
 @Suite("Review regressions")
 struct RegressionTests {
     static let attributes = #"start="20240101120000 +0000" channel="c""#
-    static let strict = ParseOptions.with { $0.policy = .strict }
+    static let strict = XMLTVOptions.with { $0.policy = .strict }
 
     func offset(of needle: String, in text: String) -> Int {
         let haystack = Array(text.utf8), pattern = Array(needle.utf8)
@@ -121,7 +121,7 @@ struct RegressionTests {
     // MARK: Well-formedness everywhere
 
     @Test func skippedContentIsStillChecked() {
-        let filtered = ParseOptions.with { $0.channelIDs = ["other"] }
+        let filtered = XMLTVOptions.with { $0.channelIDs = ["other"] }
         for xml in [
             "<tv><x><a></b></x></tv>",
             "<tv><x><a bad=unquoted></a></x></tv>",

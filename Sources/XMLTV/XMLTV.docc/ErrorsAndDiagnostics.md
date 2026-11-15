@@ -1,6 +1,7 @@
 # Errors and diagnostics
 
-How the parser decides between throwing, recovering and reporting.
+How the parser decides between throwing, recovering and reporting, and how to show the result
+to people.
 
 ## Overview
 
@@ -15,61 +16,116 @@ guess would produce data that looks valid and isn't. Broken markup therefore alw
 **Bad content** means the markup is fine but a value is wrong: a timestamp with minute 60, a
 `<length>` with no units, an unknown entity, invalid UTF-8 in a title, a programme with no
 `channel` attribute. Each problem is local to one value or one record, so recovering is safe.
-What happens next depends on ``ParseOptions/policy``.
+What happens next depends on ``XMLTVOptions/policy``.
 
 ### Lenient mode, the default
 
-``ParseOptions/Policy/lenient`` recovers what it can and records an ``XMLTVDiagnostic`` with a
-byte offset and line number for each recovery. The rule for each kind of problem is fixed:
+``XMLTVOptions/Policy/lenient`` recovers what it can and records an ``XMLTVDiagnostic`` for
+each recovery, with a line number and its ``XMLTVDiagnostic/Recovery``: what the problem cost.
+The rule for each kind of problem is fixed:
 
-| Problem | Recovery |
-|---|---|
-| Time field out of range: hour 24, minute 60, second 60 | Normalised. `20261113006000` is read as 01:00:00. |
-| Unparseable timestamp | A bad `start` drops the programme. A bad `stop` becomes nil. |
-| Zone name missing from ``ParseOptions/namedTimeZones`` | Read as UTC, and ``XMLTVTimestamp/isTimeZoneKnown`` is false. |
-| Missing required attribute: programme `start` or `channel`, channel `id` | The record is dropped. |
-| Programme without a title, channel without a display name | Kept, with an empty array. |
-| `<rating>12</rating>` with no `<value>` | The direct text becomes the value. |
-| Unknown entity such as `&nbsp;`, or a reference to a forbidden character | Kept literally. |
-| Invalid UTF-8 | Replaced with U+FFFD. |
-| A character XML forbids, such as NUL or U+FFFF | Kept. |
-| Unparseable number in `<length>` or an icon size | The value becomes nil. |
-| Content after `</tv>` | Ignored. This is usually a second document appended to the first. |
-| Input ends inside the document | Every complete record is kept, and ``ParseReport/isTruncated`` is true. |
-| Truncated or corrupt gzip stream | Everything decompressed before the damage is parsed, as for a cut-off download. |
-| Malformed UTF-16 | Replaced with U+FFFD. |
+| Problem | What happens | ``XMLTVDiagnostic/Recovery`` |
+|---|---|---|
+| Time field out of range: hour 24, minute 60, second 60 | Normalised. `20261113006000` is read as 01:00:00. | `repaired` |
+| Unparseable `start` | The programme is dropped. | `programmeDropped` |
+| Unparseable `stop` or other time | The value becomes nil. | `valueDropped` |
+| Zone name missing from ``XMLTVOptions/namedTimeZones`` | Read as UTC, and ``XMLTVTimestamp/isTimeZoneKnown`` is false. | `assumedDefault` |
+| Programme without `start` or `channel` | The programme is dropped. | `programmeDropped` |
+| Channel without `id` | The channel is dropped. | `channelDropped` |
+| Programme without a title, channel without a display name | Kept, with an empty array. | `keptAsWritten` |
+| `<rating>12</rating>` with no `<value>` | The direct text becomes the value. | `repaired` |
+| `<rating>` with neither | The rating is dropped. | `valueDropped` |
+| Icon without `src`, review without `type` | The element is dropped. | `valueDropped` |
+| Unknown entity such as `&nbsp;`, or a reference to a forbidden character | Kept literally. | `keptAsWritten` |
+| Invalid UTF-8 | Replaced with U+FFFD. | `repaired` |
+| A character XML forbids, such as NUL or U+FFFF | Kept. | `keptAsWritten` |
+| Unparseable `<length>`, `clumpidx` or icon size | The value becomes nil, or the default. | `valueDropped` |
+| Content after `</tv>` | Ignored. This is usually a second document appended to the first. | `restOfInputIgnored` |
+| Input ends inside the document | Every complete record is kept, and ``XMLTVReport/isTruncated`` is true. | `restOfInputIgnored` |
+| Truncated or corrupt gzip stream | Everything decompressed before the damage is parsed, as for a cut-off download. | `restOfInputIgnored` |
+| Malformed UTF-16 | Replaced with U+FFFD. | `repaired` |
 
 The defaults come from the feeds this library was tested against. The 1.93 GB benchmark feed
 alone has 571 stop times with minute 60, about 1,100 `<rating>` elements with text but no
 `<value>`, and about 1,900 fractional lengths such as `2.5` hours. Rejecting the whole file over
 any of these would help nobody.
 
-Diagnostics are kept in document order. ``ParseReport/diagnostics`` holds the first
-``ParseOptions/diagnosticLimit`` of them, 100 by default. ``ParseReport/diagnosticCount``
-counts all of them.
+### Summarising a parse
+
+``XMLTVReport/diagnostics`` holds the first ``XMLTVOptions/diagnosticLimit`` diagnostics, 100
+by default, in document order. In a large feed those often come from one stretch of the file,
+so use the counts, which cover the whole document, for anything you show:
+
+- ``XMLTVReport/droppedProgrammeCount`` and ``XMLTVReport/droppedChannelCount``: records that
+  were lost. Programmes on channels that ``XMLTVOptions/channelIDs`` excludes are skipped before
+  they are checked, so they never count.
+- ``XMLTVReport/diagnosticCountsByCode``: how many of each ``XMLTVError/Code``.
+- ``XMLTVReport/diagnosticCount``: the total.
+- ``XMLTVReport/isTruncated``: whether the input ended early. Records after the cut are not
+  counted, because nothing is known about them.
+
+```swift
+let report = guide.report
+var problems: [String] = []
+if report.isTruncated { problems.append("The guide was cut off.") }
+if report.droppedProgrammeCount > 0 { problems.append("\(report.droppedProgrammeCount) programmes could not be read.") }
+for (code, count) in report.diagnosticCountsByCode.sorted(by: { $0.value > $1.value }) {
+    logger.info("\(code.rawValue): \(count)")
+}
+```
+
+### Showing errors and diagnostics
+
+``XMLTVError`` conforms to `LocalizedError`, so `localizedDescription` is a sentence, such as
+"The guide is not well-formed XML: found </desc> where </title> was expected. (line 12, column
+40)". ``XMLTVDiagnostic/message`` is the same for a diagnostic, with what was done about it:
+"Line 12: The time “2024-01-01T12:00” is not valid. The programme was skipped." The text is in
+English. To localise it, switch over ``XMLTVError/Kind`` and write your own.
+
+`description` on both types gives the raw kind and location, for logs. Do not parse it.
+
+An HTML or JSON error page from a server, or any other input that is not XMLTV, throws
+``XMLTVError/Kind/notXMLTV``.
 
 ### Strict mode
 
-``ParseOptions/Policy/strict`` throws on the first problem of any kind, with the same
+``XMLTVOptions/Policy/strict`` throws on the first problem of any kind, with the same
 ``XMLTVError/Kind`` a diagnostic would carry. Use it for validating your own generator's
 output, or when a partial guide is worse than none.
 
 ```swift
-var options = ParseOptions()
-options.policy = .strict
 do {
-    _ = try XMLTVDocument(contentsOf: url, options: options)
+    _ = try XMLTVDocument(contentsOf: url, options: XMLTVOptions(policy: .strict))
 } catch {
     print(error)   // "XMLTV error at line 3, column 13: mismatchedEndTag(...)"
 }
 ```
 
-### Errors from your own code
+### Catching errors by type
 
-Typed throws, `throws(XMLTVError)`, are used wherever only the parser can fail: the
-``XMLTVDocument`` initializers and ``XMLTVReader``. You can switch over
-``XMLTVError/Kind`` exhaustively. ``XMLTVItems`` uses untyped `throws` instead, because its
-chunk sequence can fail with anything. Those errors pass through unchanged.
+The ``XMLTVDocument`` file and `Data` initializers and ``XMLTVReader`` declare
+`throws(XMLTVError)`. In a `do` block that calls only them, `error` in the `catch` is an
+``XMLTVError``. Once the block calls anything else that throws, or the code is in a closure
+whose type is inferred, such as most `Task { }` bodies, `error` is `any Error`. Then write
+`catch let error as XMLTVError`.
+
+``XMLTVItems`` and ``XMLTVDocument/init(chunks:options:)`` use untyped `throws`, because their
+source can fail with anything. Those errors pass through unchanged.
+
+### Switching over kinds
+
+``XMLTVError/Kind``, ``XMLTVError/Code`` and ``XMLTVDiagnostic/Recovery`` may gain cases in a
+minor release, as new recovery rules are added, so a `switch` over them needs an
+`@unknown default`. To count or group, use ``XMLTVError/code``, which drops the payload and can
+key a dictionary.
+
+### Damaged compressed input
+
+Lenient reports are identical whatever path or chunk size reads the input. For damaged gzip
+data in strict mode, which error is thrown first can depend on the chunking: a stream may
+decode some of the garbage that inflates before the damage is detected, and throw for that,
+where a whole-document parse throws ``XMLTVError/Kind/invalidCompressedData(_:)``. Either way
+the parse fails.
 
 ### What is not checked
 

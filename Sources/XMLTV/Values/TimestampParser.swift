@@ -156,6 +156,20 @@ enum TimestampParser {
         return era &* 146_097 &+ dayOfEra &- 719_468
     }
 
+    /// The proleptic Gregorian date `days` after 1970-01-01 (Howard Hinnant). The inverse of
+    /// ``daysFromCivil(_:_:_:)``.
+    static func civilFromDays(_ days: Int) -> (year: Int, month: Int, day: Int) {
+        let z = days + 719_468
+        let era = (z >= 0 ? z : z - 146_096) / 146_097
+        let dayOfEra = z - era * 146_097
+        let yearOfEra = (dayOfEra - dayOfEra / 1460 + dayOfEra / 36_524 - dayOfEra / 146_096) / 365
+        let dayOfYear = dayOfEra - (365 * yearOfEra + yearOfEra / 4 - yearOfEra / 100)
+        let mp = (5 * dayOfYear + 2) / 153
+        let day = dayOfYear - (153 * mp + 2) / 5 + 1
+        let month = mp < 10 ? mp + 3 : mp - 9
+        return (yearOfEra + era * 400 + (month <= 2 ? 1 : 0), month, day)
+    }
+
     @inline(__always)
     static func daysInMonth(_ month: Int, _ year: Int) -> Int {
         switch month {

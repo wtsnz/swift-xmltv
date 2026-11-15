@@ -7,16 +7,15 @@ several gigabytes per second.
 
 XMLTV is the XML format that most TV listings sources publish. A document is a `<tv>` root
 holding `<channel>` records and `<programme>` records. This library reads it into plain,
-`Sendable` Swift structs: ``Channel``, ``Programme`` and the values inside them. Types that only
-appear inside a programme are nested in it, such as ``Programme/Credit`` and
-``Programme/Rating``, so that names like `Image` don't clash with SwiftUI.
+`Sendable` Swift structs: ``Channel``, ``Programme`` and the values inside them.
 
 ```swift
 import XMLTV
 
 let guide = try XMLTVDocument(contentsOf: url)
-for programme in guide.programmes where programme.channelID == "BBC.One.uk" {
-    print(programme.start.date, programme.title ?? "")
+let schedule = XMLTVSchedule(guide)
+if let now = schedule.current("BBC.One.uk", at: .now) {
+    print(now.programme.title ?? "", "until", now.end?.date.formatted() ?? "unknown")
 }
 ```
 
@@ -26,8 +25,10 @@ There are three entry points, and they produce the same values:
   the simplest.
 - ``XMLTVReader`` returns one record at a time from a file or `Data`. Its memory use depends on
   the largest record, not the file.
-- ``XMLTVItems`` decodes an `AsyncSequence` of byte chunks, such as a download, as the chunks
-  arrive.
+- ``XMLTVItems`` decodes an `AsyncSequence` of bytes, such as a download, as they arrive.
+
+``XMLTVSchedule`` then groups a guide's programmes by channel and answers "what is on now" and
+"what is next", including for feeds that leave out stop times.
 
 The parser is written for the feeds that exist, not the ones the DTD describes. Real feeds
 interleave channels with programmes, write minute 60 in timestamps, put text straight inside
@@ -35,10 +36,37 @@ interleave channels with programmes, write minute 60 in timestamps, put text str
 these, and every recovery is reported as an ``XMLTVDiagnostic``, so nothing is silently lost.
 Broken markup still throws.
 
-On an Apple M4 Max it reads a 1.93 GB, 2.9-million-programme feed in about 0.44 seconds. That
-is about 88 times faster than Foundation's `XMLParser` building only the common fields.
-<doc:Performance> explains where the speed comes from, and <doc:DesignDecisions> explains what
-it costs.
+It is many times faster than Foundation's `XMLParser`, and faster on one core than libxml2 is
+at counting elements. <doc:Performance> has the measurements and where the speed comes from,
+and <doc:DesignDecisions> explains what it costs.
+
+### Names
+
+Guide data has plain names, such as ``Channel`` and ``Programme``. The parser's own types are
+prefixed, such as ``XMLTVOptions`` and ``XMLTVReport``. Types that only appear inside a
+programme are nested in it, such as ``Programme/Credit`` and ``Programme/Image``, so that they
+don't clash with an app's own types or with SwiftUI at the top level. Inside an
+`extension Programme`, though, `Image` means ``Programme/Image``; write `SwiftUI.Image` there.
+
+If your app has its own `Channel` or `Programme`, write `XMLTV.Channel`. The library will never
+declare a type named `XMLTV`, so that spelling always works.
+
+### Versioning
+
+The library follows semantic versioning. Until 1.0, a minor release, such as 0.2, may change
+the API, and a patch release, such as 0.1.1, will not. Depend on
+`.upToNextMinor(from: "0.1.0")`.
+
+These changes are not breaking, so they can come in any minor release, before 1.0 and after.
+Write code that expects them:
+
+- New cases in ``XMLTVError/Kind``, ``XMLTVError/Code``, ``XMLTVDiagnostic/Recovery``,
+  ``XMLTVEncoding``, ``Programme/Credit/Role`` and the option enums. They are
+  `@nonexhaustive`, so a `switch` over them needs `@unknown default`.
+- New diagnostics for input that was previously accepted silently.
+- Better wording in `localizedDescription` and ``XMLTVDiagnostic/message``.
+
+``Programme`` will not become `Identifiable` or `Codable`; its documentation explains why.
 
 ## Topics
 
@@ -46,7 +74,8 @@ it costs.
 
 - <doc:GettingStarted>
 - ``XMLTVDocument``
-- ``ParseOptions``
+- ``XMLTVSchedule``
+- ``XMLTVOptions``
 
 ### Reading incrementally
 
@@ -54,6 +83,7 @@ it costs.
 - ``XMLTVReader``
 - ``XMLTVItems``
 - ``XMLTVItem``
+- ``XMLTVByteChunks``
 
 ### Guide data
 
@@ -62,6 +92,7 @@ it costs.
 - ``Programme``
 - ``Programme/Credit``
 - ``Programme/EpisodeNumber``
+- ``Programme/SeasonEpisode``
 - ``Programme/Rating``
 - ``Programme/StarRating``
 - ``LocalizedText``
@@ -78,7 +109,7 @@ it costs.
 - <doc:ErrorsAndDiagnostics>
 - ``XMLTVError``
 - ``XMLTVDiagnostic``
-- ``ParseReport``
+- ``XMLTVReport``
 
 ### Input formats
 

@@ -19,28 +19,28 @@ struct ModelTests {
         #expect(p.credits.map(\.name) == ["blah", "a", "b", "c", "d", "e"])
         #expect(p.credits[3].character == "blah")
         #expect(p.credits[4].isGuest)
-        #expect(p.credits[5].images == [Programme.Image(url: "https://www.example.com/xxx.jpg", type: "person")])
+        #expect(p.credits[5].images == [Programme.Image("https://www.example.com/xxx.jpg", type: "person")])
         #expect(p.credits[5].urls == [URLReference("https://www.themoviedb.org/person/204", system: "TMDB")])
         #expect(p.date == "19901011")
         #expect(p.categories == [LocalizedText("Comedy", language: "en")])
         #expect(p.length == .seconds(3600))
-        #expect(p.icons == [Icon(source: "http://image.example.com/dgXPhzNJH8H.jpg", width: 500, height: 123)])
+        #expect(p.icons == [Icon("http://image.example.com/dgXPhzNJH8H.jpg", width: 500, height: 123)])
         #expect(p.urls == [URLReference("https://www.example.com/title/0365/"), URLReference("https://www.example.com/title/tt0365/", system: "IMDb")])
         #expect(p.countries == [LocalizedText("ES")])
-        #expect(p.episodeNumbers == [Programme.EpisodeNumber(system: "xmltv_ns", value: "2 . 9 . 0/1")])
+        #expect(p.episodeNumbers == [Programme.EpisodeNumber("2 . 9 . 0/1", system: "xmltv_ns")])
         let ns = try #require(p.episodeNumbers[0].xmltvNS)
         #expect(ns.displaySeason == 3 && ns.displayEpisode == 10 && ns.part == .init(index: 0, total: 1))
         #expect(p.video == Programme.Video(aspect: "16:9"))
         #expect(p.lastChance == LocalizedText(""))
-        #expect(p.subtitles == [Programme.Subtitles(type: "teletext", language: LocalizedText("English", language: "en"))])
-        #expect(p.ratings == [Programme.Rating(system: "MPAA", value: "PG")])
-        #expect(p.starRatings == [Programme.StarRating(value: "3/3", icons: [Icon(source: "stars.png")])])
-        #expect(p.starRatings[0].score! == (3, 3))
-        #expect(p.reviews == [Programme.Review(type: "text", value: "More blah blah", source: "tvreviews", reviewer: "joe", language: "en")])
+        #expect(p.subtitleTracks == [Programme.SubtitleTrack(type: "teletext", language: LocalizedText("English", language: "en"))])
+        #expect(p.ratings == [Programme.Rating("PG", system: "MPAA")])
+        #expect(p.starRatings == [Programme.StarRating("3/3", icons: [Icon("stars.png")])])
+        #expect(p.starRatings[0].score == .init(stars: 3, maximum: 3))
+        #expect(p.reviews == [Programme.Review("More blah blah", type: "text", source: "tvreviews", reviewer: "joe", language: "en")])
         #expect(p.images == [
-            Programme.Image(url: "https://www.example.com/xxxx.jpg"),
-            Programme.Image(url: "https://www.example.com/xxxx.jpg", type: "backdrop", size: "2", system: "myapp"),
-            Programme.Image(url: "https://www.example.com/xxxx.jpg", type: "poster", size: "2", orientation: "L", system: "myapp"),
+            Programme.Image("https://www.example.com/xxxx.jpg"),
+            Programme.Image("https://www.example.com/xxxx.jpg", type: "backdrop", size: "2", system: "myapp"),
+            Programme.Image("https://www.example.com/xxxx.jpg", type: "poster", size: "2", orientation: "L", system: "myapp"),
         ])
         #expect(guide.report.diagnosticCount == 0)
     }
@@ -56,7 +56,7 @@ struct ModelTests {
         #expect(first.episodeNumbers[1].xmltvNS?.episode == .init(index: 6, total: 22))
         #expect(first.episodeNumbers[1].xmltvNS?.season == nil)
         #expect(first.previouslyShown?.start?.precision == .second)
-        #expect(first.starRatings.first!.score! == (3.5, 5))
+        #expect(first.starRatings.first!.score == .init(stars: 3.5, maximum: 5))
         #expect(first.length == .seconds(3600))
         #expect(guide.programmes[1].clump == Programme.Clump(index: 1, count: 2))
         #expect(guide.programmes[1].start.utcOffsetSeconds == 3600)
@@ -126,7 +126,7 @@ struct ModelTests {
         """))
         let credit = try parse(xml).programmes[0].credits[0]
         #expect(credit.name == "Jane  Doe")
-        #expect(credit.character == "R" && credit.images.map(\.url) == ["i.jpg"] && credit.urls.map(\.value) == ["u"])
+        #expect(credit.character == "R" && credit.images.map(\.urlString) == ["i.jpg"] && credit.urls.map(\.urlString) == ["u"])
     }
 
     @Test func toleratesInterleavingReorderingAndExtensions() throws {
@@ -147,7 +147,7 @@ struct ModelTests {
         """, attributes: #"start="20261113000000+0000" stop="20261113006000+0000" channel="c""#))
         let guide = try parse(xml)
         let p = guide.programmes[0]
-        #expect(p.ratings == [Programme.Rating(value: "12")])
+        #expect(p.ratings == [Programme.Rating("12")])
         #expect(p.length == .seconds(9000))
         #expect(p.duration == .seconds(3600))
         #expect(guide.report.diagnosticCount == 3)
@@ -184,11 +184,12 @@ struct ModelTests {
     }
 
     @Test func onscreenEpisodeForms() {
-        #expect(Programme.EpisodeNumber(value: "S01E05").onscreen! == (1, 5))
-        #expect(Programme.EpisodeNumber(value: "s2 e10").onscreen! == (2, 10))
-        #expect(Programme.EpisodeNumber(value: "3x07").onscreen! == (3, 7))
-        #expect(Programme.EpisodeNumber(value: "E12").onscreen! == (nil, 12))
-        #expect(Programme.EpisodeNumber(value: "Pilot").onscreen == nil)
+        #expect(Programme.EpisodeNumber("S01E05").onscreen == .init(season: 1, episode: 5))
+        #expect(Programme.EpisodeNumber("s2 e10").onscreen == .init(season: 2, episode: 10))
+        #expect(Programme.EpisodeNumber("3x07").onscreen == .init(season: 3, episode: 7))
+        #expect(Programme.EpisodeNumber("E12").onscreen == .init(episode: 12))
+        #expect(Programme.EpisodeNumber("12").onscreen == .init(episode: 12))
+        #expect(Programme.EpisodeNumber("Pilot").onscreen == nil)
         #expect(Programme.EpisodeNumber.XMLTVNS("1.2") == nil && Programme.EpisodeNumber.XMLTVNS("a.b.c") == nil)
         #expect(Programme.EpisodeNumber.XMLTVNS("/13 . . ")?.season == .init(index: nil, total: 13))
     }

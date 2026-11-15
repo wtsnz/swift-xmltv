@@ -12,6 +12,10 @@ import Foundation
 /// Large documents are parsed on every core. The result is identical to a serial parse:
 /// channels and programmes appear in document order. To read a guide without holding all of
 /// it in memory, use ``XMLTVReader``.
+///
+/// The file and `Data` initializers are synchronous and use every core until they return, so
+/// call them off the main actor; see <doc:ChoosingAnEntryPoint#Concurrency>. For channel schedules and what is on
+/// now, build an ``XMLTVSchedule`` from the document.
 public struct XMLTVDocument: Sendable {
     /// The attributes of the `<tv>` root.
     public var info: TVInfo
@@ -20,27 +24,57 @@ public struct XMLTVDocument: Sendable {
     /// Programmes in document order.
     public var programmes: [Programme]
     /// Diagnostics, truncation and encoding: everything about the parse except the data.
-    public var report: ParseReport
+    public var report: XMLTVReport
 
     /// Reads and parses a file. Gzip compression is detected from the content, not the name.
-    public init(contentsOf url: URL, options: ParseOptions = ParseOptions()) throws(XMLTVError) {
+    ///
+    /// The URL must be a file URL. To read a guide from the network, download it to a file
+    /// first, which is the fastest way, or use ``init(chunks:options:)``.
+    public init(contentsOf url: URL, options: XMLTVOptions = XMLTVOptions()) throws(XMLTVError) {
         self = try DocumentInput.withUTF8(contentsOf: url, options: options) { bytes, input throws(XMLTVError) in
             try XMLTVDocument(DocumentDriver.parse(bytes, input: input, options: options))
         }
     }
 
     /// Parses an XMLTV document held in memory, compressed or not.
-    public init(data: Data, options: ParseOptions = ParseOptions()) throws(XMLTVError) {
+    public init(data: Data, options: XMLTVOptions = XMLTVOptions()) throws(XMLTVError) {
         self = try DocumentInput.withUTF8(data: data, options: options) { bytes, input throws(XMLTVError) in
             try XMLTVDocument(DocumentDriver.parse(bytes, input: input, options: options))
         }
     }
 
-    public init(info: TVInfo = TVInfo(), channels: [Channel] = [], programmes: [Programme] = [], report: ParseReport = ParseReport()) {
+    /// Collects a document arriving as a sequence of byte chunks, such as a download, as the
+    /// chunks arrive. The parse is serial; see ``XMLTVItems`` to handle records one at a time.
+    ///
+    /// Errors from the source are rethrown unchanged. Parse errors are ``XMLTVError``.
+    public init<Chunks: AsyncSequence>(
+        chunks: Chunks, options: XMLTVOptions = XMLTVOptions()
+    ) async throws where Chunks.Element: ContiguousBytes {
+        var iterator = XMLTVItems(chunks: chunks, options: options).makeAsyncIterator()
+        var channels: [Channel] = [], programmes: [Programme] = []
+        while let item = try await iterator.next() {
+            switch item {
+            case .channel(let channel): channels.append(channel)
+            case .programme(let programme): programmes.append(programme)
+            }
+        }
+        self.init(info: iterator.info ?? TVInfo(), channels: channels, programmes: programmes, report: iterator.report)
+    }
+
+    public init(info: TVInfo = TVInfo(), channels: [Channel] = [], programmes: [Programme] = [], report: XMLTVReport = XMLTVReport()) {
         self.info = info
         self.channels = channels
         self.programmes = programmes
         self.report = report
+    }
+
+    /// The first channel with this ID, or nil if none is declared. Feeds may declare an ID more
+    /// than once; ``channels`` keeps every record.
+    ///
+    /// This searches ``channels`` from the start. For many lookups, as in a loop over channels,
+    /// use ``XMLTVSchedule/channel(_:)``, which looks them up in a dictionary.
+    public func channel(id: String) -> Channel? {
+        channels.first { $0.id == id }
     }
 
     private init(_ output: DocumentDriver.Output) {

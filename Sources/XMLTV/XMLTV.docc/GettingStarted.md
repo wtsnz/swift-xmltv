@@ -1,6 +1,6 @@
 # Getting started
 
-Add the package, parse a guide, and find the programmes you want.
+Add the package, parse a guide, and show what is on now.
 
 ## Overview
 
@@ -9,7 +9,7 @@ Add the package, parse a guide, and find the programmes you want.
 ```swift
 // Package.swift
 dependencies: [
-    .package(url: "https://github.com/wtsnz/swift-xmltv.git", from: "0.1.0"),
+    .package(url: "https://github.com/wtsnz/swift-xmltv.git", .upToNextMinor(from: "0.1.0")),
 ],
 targets: [
     .target(name: "MyApp", dependencies: [
@@ -18,9 +18,11 @@ targets: [
 ]
 ```
 
-The package is `swift-xmltv`, and the module you import is `XMLTV`.
+The package is `swift-xmltv`, and the module you import is `XMLTV`. Until 1.0, a minor release
+such as 0.2 may change the API, and a patch release such as 0.1.1 will not, so depend on
+`.upToNextMinor`. The <doc:XMLTV#Versioning> section has the details.
 
-The library needs Swift 6.2 or later and runs on macOS 15, iOS 18, tvOS 18, watchOS 11 and
+The library needs Swift 6.2.3 or later and runs on macOS 15, iOS 18, tvOS 18, watchOS 11 and
 visionOS 2 or later. Its only dependency is the system zlib.
 
 ### Parse a guide
@@ -29,6 +31,7 @@ visionOS 2 or later. Its only dependency is the system zlib.
 programme in document order.
 
 ```swift
+import Foundation
 import XMLTV
 
 let guide = try XMLTVDocument(contentsOf: URL(filePath: "guide.xml.gz"))
@@ -40,27 +43,60 @@ print(guide.channels.count, "channels,", guide.programmes.count, "programmes")
 Gzip is detected from the first bytes, not the file name. The encoding comes from the byte-order
 mark or the XML declaration. See <doc:FormatSupport>.
 
-### Work with programmes
+The initializer is synchronous and uses every core, so in an app, call it off the main actor.
+To read a guide from the network, download it to a file first. <doc:ChoosingAnEntryPoint>
+shows both.
 
-A ``Programme`` covers the half-open interval `start ..< stop` on one channel. Times are
-``XMLTVTimestamp`` values. They sort by instant and convert to `Date` when you need one.
+### Show what is on now
+
+A ``Programme`` covers the half-open interval `start ..< stop` on one channel, but the feed
+decides what that means in practice. Programmes may be out of order, some overlap, some are
+listed twice, and `stop` is optional. ``XMLTVSchedule`` sorts each channel's programmes, drops
+exact duplicates, and works out when a programme without a `stop` ends: when the next one
+starts.
 
 ```swift
+let schedule = XMLTVSchedule(guide)
 let now = Date.now
-let onNow = guide.programmes.filter { programme in
-    programme.start.date <= now && (programme.stop?.date ?? .distantFuture) > now
-}
 
-for programme in onNow {
-    let episode = programme.episodeNumbers.lazy.compactMap(\.xmltvNS).first
-    print(programme.channelID, programme.title ?? "",
-          episode?.displaySeason ?? 0, episode?.displayEpisode ?? 0)
+for channelID in schedule.channelIDs {
+    let name = schedule.channel(channelID)?.displayName ?? channelID
+    let onNow = schedule.current(channelID, at: now)
+    let upNext = schedule.next(channelID, after: now)
+    print(name, onNow?.programme.title ?? "-", "then", upNext?.programme.title ?? "-")
 }
 ```
 
+``XMLTVSchedule/channelIDs`` lists each channel that has programmes once, in the order the feed
+declares them, including channels that have programmes but no `<channel>` record. Some feeds
+declare a channel twice, so ``XMLTVSchedule/channel(_:)`` returns the first record.
+``XMLTVSchedule/current(_:at:)`` is the programme that started most recently, which is right
+when the feed overlaps two; ``XMLTVSchedule/onAir(_:at:)`` returns them all.
+
+In SwiftUI, list ``XMLTVSchedule/Entry`` values. Their ``XMLTVSchedule/Entry/id`` is built from
+the channel and start time, so the same programme keeps its identity when you parse a newer
+copy of the feed, and selection survives a refresh.
+
+### Read the details
+
 Text that the format allows in several languages, such as titles, descriptions and categories,
-is an array of ``LocalizedText``. The first element is the one the source listed first.
-``Programme/title`` is a shortcut for the first title.
+is an array of ``LocalizedText`` in the order the source listed it. ``Programme/title`` is the
+first title. To choose by language, use `preferred(for:)`, which defaults to
+the user's preferred languages.
+
+```swift
+for entry in schedule["BBC.One.uk"].prefix(5) {
+    let programme = entry.programme
+    let title = programme.titles.preferred()?.value ?? "Untitled"
+    let episode = programme.seasonEpisode.map { "S\($0.season ?? 0)E\($0.episode ?? 0)" } ?? ""
+    let cast = programme.credits(.actor).prefix(3).map(\.name)
+    let poster = programme.images.first?.url ?? programme.icons.first?.url
+    print(entry.start, title, episode, cast, poster?.absoluteString ?? "")
+}
+```
+
+``Programme/seasonEpisode`` reads whichever numbering the feed uses, `xmltv_ns` or `onscreen`,
+and counts from one. URLs are kept as text, as `urlString`, and `url` converts on demand.
 
 ### Read only what you need
 
@@ -68,36 +104,46 @@ Most apps carry a few hundred channels, and many guides list tens of thousands. 
 IDs you want, and the parser skips every other programme without decoding it.
 
 ```swift
-var options = ParseOptions()
-options.channelIDs = ["BBC.One.uk", "ITV1.uk"]
-options.timeWindow = Date.now ..< Date.now.addingTimeInterval(24 * 3600)
-
+let options = XMLTVOptions(
+    channelIDs: ["BBC.One.uk", "ITV1.uk"],
+    timeWindow: .now ..< .now.addingTimeInterval(24 * 3600))
 let tonight = try XMLTVDocument(contentsOf: url, options: options)
 ```
 
-On the 1.93 GB test feed, keeping 1 channel in 64 runs at about 15 GB/s. Decoding everything
-runs at 4.4 GB/s.
+Filtering is several times faster than decoding everything. See <doc:Performance>.
+
+A time window cuts each channel's schedule off at its end, so the last programme inside the
+window has nothing after it. With feeds that give every programme a `stop`, as nearly all do,
+that does not matter. For a feed that leaves stops out, filter by channel only and let the
+schedule answer questions about time.
 
 ### Check what happened
 
-Every parse returns a ``ParseReport``. Real feeds have errors, and the parser recovers from
+Every parse returns a ``XMLTVReport``. Real feeds have errors, and the parser recovers from
 most of them. The report says what it recovered from, so you can decide whether to trust the
 result.
 
 ```swift
-if guide.report.isTruncated {
+let report = guide.report
+if report.isTruncated {
     print("The guide was cut off. It has", guide.programmes.count, "complete programmes.")
 }
-for diagnostic in guide.report.diagnostics {
-    print(diagnostic)   // "line 11687628: invalidTimestamp("20261113006000+0000")"
+if report.droppedProgrammeCount > 0 {
+    print(report.droppedProgrammeCount, "programmes could not be read.")
+}
+for diagnostic in report.diagnostics.prefix(10) {
+    print(diagnostic.message)   // "Line 12: The time “2024-01-01T12:00” is not valid. The programme was skipped."
 }
 ```
 
-To reject anything imperfect instead, set ``ParseOptions/policy`` to
-``ParseOptions/Policy/strict``. <doc:ErrorsAndDiagnostics> covers both policies.
+To reject anything imperfect instead, set ``XMLTVOptions/policy`` to
+``XMLTVOptions/Policy/strict``. <doc:ErrorsAndDiagnostics> covers both policies and every
+recovery rule.
 
 ### Next steps
 
-- Read a guide without holding all of it in memory: <doc:ChoosingAnEntryPoint>.
-- Handle zone names such as `BST` correctly: <doc:Timestamps>.
+- Read a guide from the network, or without holding all of it in memory, and use the parser
+  from actors and tasks: <doc:ChoosingAnEntryPoint>.
+- Show times in the viewer's zone or the broadcaster's, and handle zone names such as `BST`:
+  <doc:Timestamps>.
 - Tune for very large guides: <doc:Performance>.

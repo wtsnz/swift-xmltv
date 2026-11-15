@@ -50,11 +50,11 @@ struct DifferentialTests {
         let start = p.start.precision == .second ? String(p.start.secondsSince1970) : "-"
         let stop = p.stop.map { $0.precision == .second ? String($0.secondsSince1970) : "-" } ?? "nil"
         return [
-            p.channelID, start, stop, texts(p.titles), texts(p.subTitles), texts(p.descriptions), texts(p.categories),
+            p.channelID, start, stop, texts(p.titles), texts(p.episodeTitles), texts(p.descriptions), texts(p.categories),
             p.episodeNumbers.map { "\($0.system)=\($0.value)" }.joined(separator: ";"),
             p.credits.map { "\($0.role)=\($0.name)/\($0.character ?? "")" }.joined(separator: ";"),
             p.ratings.map { "\($0.system ?? "")=\($0.value)" }.joined(separator: ";"),
-            p.icons.map(\.source).joined(separator: ";"),
+            p.icons.map(\.urlString).joined(separator: ";"),
         ].joined(separator: " | ")
     }
 }

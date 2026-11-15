@@ -1,6 +1,7 @@
 # Choosing an entry point
 
-Pick between a whole document, a pull reader and an async sequence, by memory and latency.
+Pick between a whole document, a pull reader and an async sequence, and use them from tasks
+and actors.
 
 ## Overview
 
@@ -11,11 +12,13 @@ is available.
 
 | | ``XMLTVDocument`` | ``XMLTVReader`` | ``XMLTVItems`` |
 |---|---|---|---|
-| Input | file, `Data` | file, `Data` | `AsyncSequence` of byte chunks |
-| Cores | all, for inputs of 1 MiB or more | one | one |
+| Input | file, `Data`, or chunks | file, `Data` | `AsyncSequence` of byte chunks or bytes |
+| Cores | all, for files and `Data` of 1 MiB or more; one for chunks | one | one |
 | Memory | the whole result, plus the input | about one record, plus a 1 MiB read buffer | about one record, plus unread chunks |
 | First record | after the whole parse | immediately | as soon as its bytes arrive |
-| Speed on the 1.93 GB feed | 4.4 GB/s | 0.47 GB/s | network-bound |
+
+For a guide on the network, download it to a file and use ``XMLTVDocument``, unless you need
+records before the download finishes.
 
 ### Whole documents
 
@@ -24,8 +27,8 @@ path by a wide margin, because it is the only one that can split the input acros
 
 The result costs memory in proportion to the guide. A fully parsed 1.93 GB feed peaks at about
 5 GB of resident memory, including the input buffer, which is freed when the initializer
-returns. Freeing the result takes about 0.55 seconds on one thread, and whichever thread drops
-the last reference pays it. If that thread is the main thread, hand the old document to a
+returns. Freeing the result takes about half a second on one thread, and whichever thread
+drops the last reference pays it. If that thread is the main thread, hand the old document to a
 background queue when you replace it:
 
 ```swift
@@ -54,39 +57,155 @@ while let item = try reader.next() {
 print(reader.report.diagnosticCount, "problems recovered")
 ```
 
-The reader is `~Copyable`: it owns an open file, and copying it would make two readers fight
-over one position. Pass it `inout` or `consuming`.
+A reader is a single pass over its input, so it is noncopyable: a copy would be a second owner
+taking records from the same cursor. The compiler enforces this, which means a reader is held
+a little differently from other values:
+
+- Keep it in a local `var`, a class, an actor, or a struct that is itself `~Copyable`. An
+  ordinary struct property does not work, because the struct would be copyable.
+- Pass it as `inout` to a function that reads from it, or `consuming` to hand it over.
+- ``XMLTVReader/info`` is nil until the first call to ``XMLTVReader/next()``.
 
 > Note: ``XMLTVReader/next()`` returns nil only after it has read to the end of the input and
 > checked everything after `</tv>`. A file with garbage after the root therefore fails at the
 > end in strict mode, just as ``XMLTVDocument`` does.
 
-### Records as they download
+### Guides from the network
 
-Use ``XMLTVItems`` to parse while the bytes arrive. It accepts any `AsyncSequence` whose
-elements conform to `ContiguousBytes`, such as `Data` or `[UInt8]`.
+The simplest and fastest way to read a guide from a server is to download it, then parse the
+file. Gzip is detected from the content, so the temporary file's name does not matter.
 
 ```swift
-var items = XMLTVItems(chunks: downloadChunks).makeAsyncIterator()
-while let item = try await items.next() {
-    if case .programme(let programme) = item { try await store.insert(programme) }
-}
-if items.report.isTruncated { showWarning("The download was cut off") }
+let (file, response) = try await URLSession.shared.download(from: guideURL)
+guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw DownloadError.badStatus }
+let guide = try XMLTVDocument(contentsOf: file)
 ```
 
+An error page from the server is reported as ``XMLTVError/Kind/notXMLTV``, whether it is
+HTML, JSON or plain text. ``XMLTVDocument/init(contentsOf:options:)`` takes only file URLs and
+throws ``XMLTVError/Kind/notAFileURL(_:)`` for others.
+
+Keep the downloaded file as your cache. Parsing it again is several times faster than decoding
+the same records from JSON, and the compressed file is a fraction of the size.
+
+### Records as they download
+
+Use ``XMLTVItems`` to handle records while the bytes arrive: on a device without the memory
+for the whole guide, or to fill a database during the download. It accepts any
+`AsyncSequence` whose elements conform to `ContiguousBytes`, such as `Data` or `[UInt8]`, and,
+through ``XMLTVItems/init(bytes:chunkSize:options:)``, a `Sendable` sequence of single bytes
+such as `URLSession.AsyncBytes`.
+
+```swift
+let (bytes, response) = try await URLSession.shared.bytes(from: guideURL)
+guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw DownloadError.badStatus }
+let items = XMLTVItems(bytes: bytes)
+for try await item in items {
+    if case .programme(let programme) = item { try await store.insert(programme) }
+}
+if let report = items.report, report.isTruncated {
+    showWarning("The download was cut off")
+}
+```
+
+A download cut off by the server ends the loop normally, after the last complete record, so
+check ``XMLTVItems/report`` after the loop. It holds the report of the most recent iteration to
+end. A loop that ends early, by `break` or a thrown error, also leaves a report, covering the
+records read so far. While the loop runs, the iterator's ``XMLTVItems/AsyncIterator/report``
+has the report so far, and its ``XMLTVReport/inputByteCount`` divided by the download's
+expected length gives progress.
+
+Errors thrown by the source come out of the loop unchanged, so a network failure stays a
+network failure and is not reported as bad XML. To collect everything instead of handling
+records one by one, use ``XMLTVDocument/init(chunks:options:)``.
+
+#### Speed and memory
+
+Gathering single bytes into chunks costs more than parsing them. Through
+``XMLTVItems/init(bytes:chunkSize:options:)``, `URLSession.AsyncBytes` reads a local guide at
+about 200 MB/s, from the main actor or off it, against about 440 MB/s for 64 KiB `Data` chunks
+and several GB/s for ``XMLTVDocument``. A network is usually slower than all of these. For the
+fastest result, download to a file.
+
 Iteration is pull-driven, with no background task. Each call to `next()` decodes up to the next
-record and reads more chunks only when it has to. A slow consumer therefore slows the download,
-and memory stays bounded. Errors thrown by the chunk sequence come out of `next()` unchanged,
-so a network failure stays a network failure and is not reported as bad XML.
+record and reads more chunks only when it has to. Memory stays bounded as long as the source
+also waits to be asked, as `URLSession.AsyncBytes` does. An `AsyncStream` that a delegate feeds
+with `Data` buffers whatever it is given, so a slow consumer makes it grow. Do not give such a
+stream a dropping buffering policy: a dropped chunk is lost XML.
 
-To read the report, use the iterator directly, as above, rather than `for try await`. A
-`for` loop hides the iterator.
+### Concurrency
 
-#### Feeding chunk sequences efficiently
+Documents, channels, programmes and reports are `Sendable` values, so they move freely between
+tasks and actors.
 
-Feed chunks of a few kilobytes or more. `URLSession.AsyncBytes` yields one byte at a time, and
-an `AsyncSequence` element per byte is slow in any Swift code. Group the bytes into chunks
-first, or download with a delegate that delivers `Data`.
+#### Parse off the main actor
+
+The ``XMLTVDocument`` file and `Data` initializers are synchronous and use every core until
+they return.
+A plain `Task { }` started from the main actor runs on the main actor, so the parse would block
+it. Make the parse a `@concurrent` function instead, or run it in a detached task:
+
+```swift
+@concurrent
+func loadGuide(from file: URL) async throws -> XMLTVDocument {
+    try XMLTVDocument(contentsOf: file)
+}
+
+@MainActor
+final class GuideModel {
+    var guide: XMLTVDocument?
+
+    func refresh(from file: URL) async throws {
+        guide = try await loadGuide(from: file)
+    }
+}
+```
+
+#### Move a reader into a task or an actor
+
+``XMLTVReader`` is `Sendable`, so a reader opened in one place can be read in another. Because
+it is noncopyable, moving it is a transfer: the original variable can no longer be used.
+
+```swift
+actor Importer {
+    private var reader: XMLTVReader
+
+    init(reader: consuming XMLTVReader) {
+        self.reader = reader
+    }
+
+    func importNext() throws -> XMLTVItem? {
+        try reader.next()
+    }
+}
+
+let importer = Importer(reader: try XMLTVReader(contentsOf: file))
+```
+
+#### Iterate items in an actor
+
+`for try await` over ``XMLTVItems`` works in an actor method as anywhere else. If you need the
+iterator itself, keep it in a local variable of the method and pass the actor's isolation, so
+the chunks are read on the actor:
+
+```swift
+extension Importer {
+    func importAll<Chunks>(_ items: XMLTVItems<Chunks>) async throws -> XMLTVReport {
+        var iterator = items.makeAsyncIterator()
+        while let item = try await iterator.next(isolation: self) {
+            _ = item   // store it
+        }
+        return iterator.report
+    }
+}
+```
+
+An iterator stored in an actor property cannot be advanced with `await`, because the call
+would hold exclusive access to the property across a suspension. An iterator is one cursor:
+copies share their position.
+
+``XMLTVItems`` is `Sendable` when its source is, so an unstarted sequence can be handed to
+another task.
 
 ### Why there is no callback or visitor API
 

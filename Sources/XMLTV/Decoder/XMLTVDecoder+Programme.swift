@@ -14,20 +14,30 @@ extension XMLTVDecoder {
             else { rareAttributes.append(attribute) }
         }
 
-        guard let channelAttribute, let startAttribute else {
-            let missing = channelAttribute == nil ? "channel" : "start"
-            try diagnostics.report(.missingAttribute(element: "programme", attribute: missing), at: elementStart)
+        // Selection runs before validation, so a programme on a channel the caller excluded is
+        // skipped at the cost of one attribute compare, and its problems are not reported. With
+        // a channel filter, a programme with no channel can never be selected.
+        guard let channelAttribute else {
+            if channelIDs == nil {
+                try diagnostics.report(.missingAttribute(element: "programme", attribute: "channel"), .programmeDropped, at: elementStart)
+            }
             try skipContent(of: name, isEmpty: isEmpty)
             return nil
         }
-
-        // Selection runs first, so rejected programmes cost one attribute compare and a skip.
         let (channelID, isSelected) = try channel(channelAttribute)
         guard isSelected else {
+            // Reading the channel attribute may have reported a repair in it. The programme is
+            // not wanted, so neither is that.
+            diagnostics.discardPending()
             try skipContent(of: name, isEmpty: isEmpty)
             return nil
         }
-        guard let start = try timestamp(startAttribute) else {
+        guard let startAttribute else {
+            try diagnostics.report(.missingAttribute(element: "programme", attribute: "start"), .programmeDropped, at: elementStart)
+            try skipContent(of: name, isEmpty: isEmpty)
+            return nil
+        }
+        guard let start = try timestamp(startAttribute, ifInvalid: .programmeDropped) else {
             try skipContent(of: name, isEmpty: isEmpty)
             return nil
         }
@@ -48,7 +58,7 @@ extension XMLTVDecoder {
         }
         if hasDetails { programme.details = Programme.Details(details) }
         if programme.titles.isEmpty {
-            try diagnostics.report(.missingElement(element: "programme", child: "title"), at: elementStart)
+            try diagnostics.report(.missingElement(element: "programme", child: "title"), .keptAsWritten, at: elementStart)
         }
         expectedCounts.update(from: programme)
         return programme
@@ -84,7 +94,7 @@ extension XMLTVDecoder {
                 case .title:
                     append(try localizedText(child, isEmpty: isEmpty), to: &programme.titles, expecting: expectedCounts.titles)
                 case .subTitle:
-                    append(try localizedText(child, isEmpty: isEmpty), to: &programme.subTitles, expecting: expectedCounts.subTitles)
+                    append(try localizedText(child, isEmpty: isEmpty), to: &programme.episodeTitles, expecting: expectedCounts.episodeTitles)
                 case .desc:
                     append(try localizedText(child, isEmpty: isEmpty), to: &programme.descriptions, expecting: expectedCounts.descriptions)
                 case .category:
@@ -102,7 +112,7 @@ extension XMLTVDecoder {
                     if let rating = try rating(child, isEmpty: isEmpty) { append(rating, to: &programme.ratings, expecting: expectedCounts.ratings) }
                 case .starRating:
                     if let rating = try rating(child, isEmpty: isEmpty) {
-                        programme.starRatings.append(Programme.StarRating(system: rating.system, value: rating.value, icons: rating.icons))
+                        programme.starRatings.append(Programme.StarRating(rating.value, system: rating.system, icons: rating.icons))
                     }
                 case .previouslyShown:
                     programme.previouslyShown = try previouslyShown(child, isEmpty: isEmpty)
@@ -132,7 +142,7 @@ extension XMLTVDecoder {
                     try skipContent(of: child, isEmpty: isEmpty)
                     details.isNew = true; hasDetails = true
                 case .subtitles:
-                    details.subtitles.append(try subtitles(child, isEmpty: isEmpty)); hasDetails = true
+                    details.subtitleTracks.append(try subtitleTrack(child, isEmpty: isEmpty)); hasDetails = true
                 case .review:
                     if let review = try review(child, isEmpty: isEmpty) { details.reviews.append(review); hasDetails = true }
                 case .image:
@@ -178,7 +188,7 @@ extension XMLTVDecoder {
     /// One person. The DTD makes these mixed content: the name is the element's own text, and it
     /// may be interleaved with `<image>` and `<url>` children.
     private mutating func credit(_ role: Programme.Credit.Role, _ name: ByteRange, isEmpty: Bool) throws(XMLTVError) -> Programme.Credit {
-        var credit = Programme.Credit(role: role, name: "")
+        var credit = Programme.Credit("", role: role)
         if role == .actor {
             if let character = scanner.attribute("role") { credit.character = try string(character) }
             if let guest = scanner.attribute("guest") {
@@ -242,7 +252,7 @@ extension XMLTVDecoder {
 
     private mutating func episodeNumber(_ name: ByteRange, isEmpty: Bool) throws(XMLTVError) -> Programme.EpisodeNumber {
         let system = try scanner.attribute("system").map { attribute throws(XMLTVError) in try string(attribute) } ?? "onscreen"
-        return Programme.EpisodeNumber(system: system, value: try textContent(of: name, isEmpty: isEmpty))
+        return Programme.EpisodeNumber(try textContent(of: name, isEmpty: isEmpty), system: system)
     }
 
     /// `<rating>` and `<star-rating>` share a shape: a `system` attribute, a required `<value>`
@@ -276,11 +286,14 @@ extension XMLTVDecoder {
             }
         }
         if value == nil {
-            try diagnostics.report(.missingElement(element: scanner.string(name), child: "value"), at: start)
-            guard let directText else { return nil }
+            guard let directText else {
+                try diagnostics.report(.missingElement(element: scanner.string(name), child: "value"), .valueDropped, at: start)
+                return nil
+            }
+            try diagnostics.report(.missingElement(element: scanner.string(name), child: "value"), .repaired, at: start)
             value = try text.text(directText.range, needsDecoding: directText.needsDecoding, in: scanner, diagnostics: &diagnostics)
         }
-        return Programme.Rating(system: system, value: value!, icons: icons)
+        return Programme.Rating(value!, system: system, icons: icons)
     }
 
     private mutating func previouslyShown(_ name: ByteRange, isEmpty: Bool) throws(XMLTVError) -> Programme.PreviouslyShown {
@@ -305,7 +318,7 @@ extension XMLTVDecoder {
         // Anything beyond a century is treated as invalid, which also keeps `Duration` in range.
         guard let unitSeconds, let amount = Double(value), amount >= 0, amount * unitSeconds <= Self.maximumLength else {
             let detail = units.map { "\(value) \($0)" } ?? "missing units"
-            try diagnostics.report(.invalidValue(element: "length", value: detail), at: start)
+            try diagnostics.report(.invalidValue(element: "length", value: detail), .valueDropped, at: start)
             return nil
         }
         return .seconds(amount * unitSeconds)
@@ -337,21 +350,21 @@ extension XMLTVDecoder {
         return audio
     }
 
-    private mutating func subtitles(_ name: ByteRange, isEmpty: Bool) throws(XMLTVError) -> Programme.Subtitles {
-        var subtitles = Programme.Subtitles(type: try scanner.attribute("type").map { attribute throws(XMLTVError) in try string(attribute) })
+    private mutating func subtitleTrack(_ name: ByteRange, isEmpty: Bool) throws(XMLTVError) -> Programme.SubtitleTrack {
+        var track = Programme.SubtitleTrack(type: try scanner.attribute("type").map { attribute throws(XMLTVError) in try string(attribute) })
         try forEachChild(of: name, isEmpty: isEmpty) { decoder, tag, child, childIsEmpty throws(XMLTVError) in
             if tag == .language {
-                subtitles.language = try decoder.localizedText(child, isEmpty: childIsEmpty)
+                track.language = try decoder.localizedText(child, isEmpty: childIsEmpty)
             } else {
                 try decoder.skipContent(of: child, isEmpty: childIsEmpty)
             }
         }
-        return subtitles
+        return track
     }
 
     private mutating func review(_ name: ByteRange, isEmpty: Bool) throws(XMLTVError) -> Programme.Review? {
         let start = scanner.tokenStart
-        var review = Programme.Review(type: "", value: "")
+        var review = Programme.Review("", type: "")
         for index in 0..<scanner.attributeCount {
             let attribute = scanner.attribute(at: index)
             if scanner.bytes(attribute.name, equal: "type") { review.type = try string(attribute) }
@@ -361,7 +374,7 @@ extension XMLTVDecoder {
         }
         review.value = try textContent(of: name, isEmpty: isEmpty)
         if review.type.isEmpty {
-            try diagnostics.report(.missingAttribute(element: "review", attribute: "type"), at: start)
+            try diagnostics.report(.missingAttribute(element: "review", attribute: "type"), .valueDropped, at: start)
             return nil
         }
         return review
@@ -373,7 +386,7 @@ extension XMLTVDecoder {
         if parts.count == 2, let index = Int(parts[0]), let count = Int(parts[1]), index >= 0, count > index {
             return Programme.Clump(index: index, count: count)
         }
-        try diagnostics.report(.invalidValue(element: "clumpidx", value: value), at: attribute.value.start)
+        try diagnostics.report(.invalidValue(element: "clumpidx", value: value), .valueDropped, at: attribute.value.start)
         return nil
     }
 
@@ -448,12 +461,12 @@ extension Programme.Credit.Role {
 
 /// How many of each repeated child the previous programme had. See `append(_:to:expecting:)`.
 struct ExpectedCounts {
-    var titles = 1, subTitles = 1, descriptions = 1, categories = 1, episodeNumbers = 1
+    var titles = 1, episodeTitles = 1, descriptions = 1, categories = 1, episodeNumbers = 1
     var icons = 1, ratings = 1, credits = 1
 
     mutating func update(from programme: Programme) {
         titles = programme.titles.count
-        subTitles = programme.subTitles.count
+        episodeTitles = programme.episodeTitles.count
         descriptions = programme.descriptions.count
         categories = programme.categories.count
         episodeNumbers = programme.episodeNumbers.count

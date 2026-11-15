@@ -9,6 +9,22 @@
 /// though that initializer validates the UTF-8 a second time (quickly; it never fails here).
 /// Text in skipped subtrees is not checked: it never becomes a string.
 enum TextValidation {
+    /// Every kind of problem in `bytes` that has one, each once: a forbidden character, and
+    /// invalid UTF-8. ``firstProblem(in:)`` finds the first problem quickly; this slower check
+    /// runs only on text that has one, so that text with both kinds reports both.
+    static func problems(in bytes: UnsafeBufferPointer<UInt8>, first: XMLTVError.Kind) -> [XMLTVError.Kind] {
+        let decoded = String(decoding: bytes, as: UTF8.self)
+        let forbidden = decoded.unicodeScalars.first { scalar in
+            let value = scalar.value
+            return (value < 0x20 && value != 0x09 && value != 0x0A && value != 0x0D) || value == 0xFFFE || value == 0xFFFF
+        }
+        let isInvalidUTF8 = !decoded.utf8.elementsEqual(bytes)
+        var problems = [first]
+        if case .invalidCharacter = first, isInvalidUTF8 { problems.append(.invalidUTF8) }
+        if first == .invalidUTF8, let forbidden { problems.append(.invalidCharacter(forbidden.value)) }
+        return problems
+    }
+
     /// The first problem in `bytes`, or nil if the text is valid.
     @inline(__always)
     static func firstProblem(in bytes: UnsafeBufferPointer<UInt8>) -> XMLTVError.Kind? {

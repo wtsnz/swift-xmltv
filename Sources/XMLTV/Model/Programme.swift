@@ -1,13 +1,30 @@
+import Foundation
+
 /// A `<programme>`: one broadcast of a show on a channel, over the half-open interval
 /// `start ..< stop`.
 ///
 /// Programmes are not sorted or grouped by the parser. They keep the order of the source, which
-/// is usually grouped by channel and then sorted by time, but not always.
+/// is usually grouped by channel and then sorted by time, but not always. ``XMLTVSchedule``
+/// groups and sorts them, and works out when programmes without a `stop` end.
 ///
-/// The fields most feeds fill in are stored inline. The DTD's less common fields live in one
-/// shared, copy-on-write allocation that exists only for programmes that use them. That keeps the
-/// struct small: a multi-gigabyte guide holds millions of these, and most of them carry only a
-/// title, a description and a few categories. Both kinds of field read and write the same way.
+/// The less common fields are stored out of line, which keeps this struct small. They read and
+/// write like the others.
+///
+/// ### Identity and persistence
+///
+/// `Programme` is not `Identifiable`, and it will not become so. XMLTV gives a broadcast no
+/// identifier, and no combination of fields is unique in real feeds: merged feeds repeat
+/// records, sometimes identical in every field, and programmes in a clump share their channel
+/// and times. For SwiftUI, use ``XMLTVSchedule/Entry``, which is identified by its position in
+/// the parse, or an identifier your app assigns.
+///
+/// `Programme` is not `Codable` either, and will not become so. To cache a guide, keep the
+/// downloaded file and parse it again: that is several times faster than decoding the same
+/// records from JSON. The small values that apps embed in their own records, such as
+/// ``XMLTVTimestamp``, ``LocalizedText``, ``Icon`` and ``URLReference``, are `Codable`.
+///
+/// These are promises rather than omissions. If the library added either conformance later,
+/// it would silently replace one an app had declared itself.
 public struct Programme: Sendable, Hashable {
     /// The ``Channel/id`` of the channel showing it.
     public var channelID: String
@@ -19,19 +36,20 @@ public struct Programme: Sendable, Hashable {
     public var stop: XMLTVTimestamp?
     /// Titles, one per language, most preferred first. Valid XMLTV has at least one.
     public var titles: [LocalizedText]
-    /// Episode titles.
-    public var subTitles: [LocalizedText]
+    /// `<sub-title>`: usually the episode title, one per language. See ``episodeTitle``.
+    public var episodeTitles: [LocalizedText]
     /// Descriptions. A source may give several in one language, for example a short one and a
     /// long one.
     public var descriptions: [LocalizedText]
     /// Cast and crew in billing order.
     public var credits: [Credit]
-    /// The production date. XMLTV dates are often partial (`2024`, `200807`), so this is the text
-    /// as written.
+    /// The production date, as written. XMLTV dates are often partial (`2024`, `200807`). See
+    /// ``productionDate`` for the parsed value.
     public var date: String?
     /// Genres and other categories, as written.
     public var categories: [LocalizedText]
-    /// Episode numbers, one per numbering system.
+    /// Episode numbers, one per numbering system. See ``seasonEpisode`` for the season and
+    /// episode, whichever system the feed uses.
     public var episodeNumbers: [EpisodeNumber]
     /// Images for the programme, most preferred first.
     public var icons: [Icon]
@@ -43,12 +61,14 @@ public struct Programme: Sendable, Hashable {
     public var previouslyShown: PreviouslyShown?
     var details: Details
 
-    public init(channelID: String, start: XMLTVTimestamp, stop: XMLTVTimestamp? = nil) {
+    /// Creates a programme with the given times and title, and every other field empty. Set the
+    /// others afterwards. This is mostly useful for tests and previews.
+    public init(channelID: String, start: XMLTVTimestamp, stop: XMLTVTimestamp? = nil, title: String? = nil) {
         self.channelID = channelID
         self.start = start
         self.stop = stop
-        self.titles = []
-        self.subTitles = []
+        self.titles = title.map { [LocalizedText($0)] } ?? []
+        self.episodeTitles = []
         self.descriptions = []
         self.credits = []
         self.date = nil
@@ -61,12 +81,55 @@ public struct Programme: Sendable, Hashable {
         self.details = Details()
     }
 
-    /// The first title.
+    /// The first title. For a particular language, use `preferred(for:)` on
+    /// ``titles``.
     public var title: String? { titles.first?.value }
+
+    /// The first episode title.
+    public var episodeTitle: String? { episodeTitles.first?.value }
 
     /// The scheduled running time, if both ends are known.
     public var duration: Duration? {
         stop.map { .seconds($0.secondsSince1970 - start.secondsSince1970) }
+    }
+
+    /// The start and stop as dates, or nil without a `stop`, or when `stop` is before `start`.
+    /// ``XMLTVSchedule`` can fill in a missing `stop` from the next programme.
+    ///
+    /// The programme covers `start ..< stop`, but `DateInterval.contains(_:)` includes its end,
+    /// so at a handover both programmes' intervals contain the date. To test what is on air,
+    /// use ``XMLTVSchedule/Entry/isOnAir(at:)``.
+    public var dateInterval: DateInterval? {
+        guard let stop, stop.secondsSince1970 >= start.secondsSince1970 else { return nil }
+        return DateInterval(start: start.date, end: stop.date)
+    }
+
+    /// ``date`` parsed, keeping its precision: `2024` is a timestamp of ``XMLTVTimestamp/Precision/year``
+    /// precision, not midnight on 1 January. Nil when there is no date or it does not parse.
+    public var productionDate: XMLTVTimestamp? {
+        date.flatMap { try? XMLTVTimestamp($0, policy: .lenient) }
+    }
+
+    /// The credits in one role, in billing order.
+    ///
+    /// ```swift
+    /// let cast = programme.credits(.actor).map(\.name)
+    /// ```
+    public func credits(_ role: Credit.Role) -> [Credit] {
+        credits.filter { $0.role == role }
+    }
+
+    /// The season and episode, from the first episode number that gives them. `xmltv_ns`
+    /// numbers are tried before `onscreen` ones, because they are machine-readable. Both are
+    /// converted to count from one, as people do.
+    public var seasonEpisode: SeasonEpisode? {
+        for number in episodeNumbers where number.system == "xmltv_ns" {
+            if let value = number.seasonEpisode { return value }
+        }
+        for number in episodeNumbers where number.system == "onscreen" {
+            if let value = number.seasonEpisode { return value }
+        }
+        return nil
     }
 
     // MARK: Less common fields
@@ -115,9 +178,10 @@ public struct Programme: Sendable, Hashable {
     public var isNew: Bool {
         get { details.fields.isNew } set { details.update { $0.isNew = newValue } }
     }
-    /// Subtitle streams.
-    public var subtitles: [Subtitles] {
-        get { details.fields.subtitles } set { details.update { $0.subtitles = newValue } }
+    /// `<subtitles>`: the ways the programme is subtitled or signed. Not to be confused with
+    /// ``episodeTitles``.
+    public var subtitleTracks: [SubtitleTrack] {
+        get { details.fields.subtitleTracks } set { details.update { $0.subtitleTracks = newValue } }
     }
     /// Reviews, or links to them.
     public var reviews: [Review] {
@@ -164,7 +228,7 @@ extension Programme {
             var premiere: LocalizedText?
             var lastChance: LocalizedText?
             var isNew = false
-            var subtitles: [Subtitles] = []
+            var subtitleTracks: [SubtitleTrack] = []
             var reviews: [Review] = []
             var images: [Image] = []
             var pdcStart: XMLTVTimestamp?
